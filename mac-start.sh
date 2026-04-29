@@ -26,6 +26,8 @@ if [ "$1" = "--stop" ]; then
     else
         echo "Bot is not running"
     fi
+    pkill -f "dist/index.js" 2>/dev/null
+    rm -f "$SCRIPT_DIR/.bot.lock" 2>/dev/null
     # Stop menu bar app too
     launchctl unload "$MENUBAR_PLIST_DST" 2>/dev/null
     pkill -f "CodexBotMenu" 2>/dev/null
@@ -102,7 +104,8 @@ if [ "$1" = "--fg" ]; then
     echo "[codex-bot] Starting bot (foreground)..."
     touch "$SCRIPT_DIR/.bot.lock"
     trap 'rm -f "$SCRIPT_DIR/.bot.lock"' EXIT
-    exec node dist/index.js
+    node dist/index.js
+    exit $?
 fi
 
 # Default: background mode (register with launchd)

@@ -835,7 +835,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !pid.isEmpty && pid != "-" && pid != "0" {
             return true
         }
-        return FileManager.default.fileExists(atPath: botDir + "/.bot.lock")
+        let lockPath = botDir + "/.bot.lock"
+        guard FileManager.default.fileExists(atPath: lockPath) else {
+            return false
+        }
+
+        let processOutput = runShell("pgrep -f 'dist/index.js' 2>/dev/null")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !processOutput.isEmpty {
+            return true
+        }
+
+        try? FileManager.default.removeItem(atPath: lockPath)
+        return false
     }
 
     private func updateStatus() {
@@ -1850,6 +1862,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func stopBot() {
         runShell("launchctl unload '\(plistDst)' 2>/dev/null")
+        runShell("pkill -f 'dist/index.js' 2>/dev/null")
+        try? FileManager.default.removeItem(atPath: botDir + "/.bot.lock")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
             self.updateStatus()
             self.buildMenu()
@@ -1859,6 +1873,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func restartBot() {
         runShell("launchctl unload '\(plistDst)' 2>/dev/null")
+        runShell("pkill -f 'dist/index.js' 2>/dev/null")
+        try? FileManager.default.removeItem(atPath: botDir + "/.bot.lock")
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             self.generatePlist()
             self.runShell("launchctl load '\(self.plistDst)'")
