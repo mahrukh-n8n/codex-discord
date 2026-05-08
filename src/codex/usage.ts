@@ -93,6 +93,11 @@ function usageCachePath(): string {
   return path.join(os.homedir(), ".codex", "rate-limits-cache.json");
 }
 
+function normalizeFetchedAt(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value < 10_000_000_000 ? value * 1000 : value;
+}
+
 export function normalizeCodexUsage(result: CodexRateLimitsResponse | Record<string, unknown>): CodexUsageData | null {
   const existingUsage = readUsageData(result);
   if (existingUsage) return existingUsage;
@@ -132,7 +137,8 @@ export function loadCodexUsageCache(): CachedCodexUsage | null {
   try {
     const raw = fs.readFileSync(usageCachePath(), "utf-8");
     const parsed = JSON.parse(raw) as { fetchedAt?: unknown; usage?: unknown };
-    if (typeof parsed.fetchedAt !== "number" || !parsed.usage || !isObject(parsed.usage)) {
+    const fetchedAt = normalizeFetchedAt(parsed.fetchedAt);
+    if (fetchedAt === null || !parsed.usage || !isObject(parsed.usage)) {
       return null;
     }
 
@@ -140,7 +146,7 @@ export function loadCodexUsageCache(): CachedCodexUsage | null {
     if (!usage) return null;
 
     return {
-      fetchedAt: parsed.fetchedAt,
+      fetchedAt,
       usage,
     };
   } catch {

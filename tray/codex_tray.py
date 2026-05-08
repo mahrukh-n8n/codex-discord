@@ -945,11 +945,21 @@ def usage_cache_payload():
         return None
 
 
+def _usage_timestamp_ms():
+    return int(time.time() * 1000)
+
+
+def _usage_timestamp_seconds(value):
+    if not isinstance(value, (int, float)):
+        return None
+    return float(value) / 1000 if value > 10000000000 else float(value)
+
+
 def save_usage_cache(usage):
     try:
         os.makedirs(os.path.dirname(USAGE_CACHE_PATH), exist_ok=True)
         with open(USAGE_CACHE_PATH, "w") as f:
-            json.dump({"fetchedAt": time.time(), "usage": usage}, f)
+            json.dump({"fetchedAt": _usage_timestamp_ms(), "usage": usage}, f)
     except Exception:
         pass
 
@@ -963,16 +973,23 @@ def load_usage_cache():
     if usage:
         usage_data = usage
     fetched_at = payload.get("fetchedAt")
-    if isinstance(fetched_at, (int, float)):
-        usage_last_fetched = float(fetched_at)
+    fetched_at_seconds = _usage_timestamp_seconds(fetched_at)
+    if fetched_at_seconds is not None:
+        usage_last_fetched = fetched_at_seconds
 
 
 def request_codex_usage():
     global last_usage_error
     command = """
+export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$HOME/.volta/bin:$HOME/.yarn/bin:$HOME/.config/yarn/global/node_modules/.bin:$PATH"
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1
-codex app-server
+CODEX_BIN="${CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
+[ -z "$CODEX_BIN" ] && [ -x "$HOME/.npm-global/bin/codex" ] && CODEX_BIN="$HOME/.npm-global/bin/codex"
+[ -z "$CODEX_BIN" ] && [ -x "$HOME/.local/bin/codex" ] && CODEX_BIN="$HOME/.local/bin/codex"
+[ -z "$CODEX_BIN" ] && [ -x "$HOME/.volta/bin/codex" ] && CODEX_BIN="$HOME/.volta/bin/codex"
+[ -n "$CODEX_BIN" ] || exit 127
+exec "$CODEX_BIN" app-server
 """
     proc = subprocess.Popen(
         ["/bin/bash", "-lc", command],

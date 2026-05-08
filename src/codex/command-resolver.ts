@@ -39,6 +39,10 @@ function commandWorks(command: string): boolean {
   }
 }
 
+function isBareCommand(command: string): boolean {
+  return !command.includes("/") && !command.includes("\\");
+}
+
 function uniqueCandidates(candidates: Array<string | undefined | null>): string[] {
   const seen = new Set<string>();
   const resolved: string[] = [];
@@ -60,7 +64,6 @@ function unixCandidates(): string[] {
 
   return uniqueCandidates([
     process.env.CODEX_BIN,
-    "codex",
     ...pathEntries.map((entry) => path.join(entry, "codex")),
     path.join(home, ".npm-global", "bin", "codex"),
     path.join(home, ".local", "bin", "codex"),
@@ -70,12 +73,13 @@ function unixCandidates(): string[] {
     "/usr/local/bin/codex",
     "/usr/bin/codex",
     "/opt/homebrew/bin/codex",
+    "codex",
   ]);
 }
 
 export function resolveCodexCommand(): string {
   const cache = loadCache();
-  if (cache.codexCommand && commandWorks(cache.codexCommand)) {
+  if (cache.codexCommand && (process.platform === "win32" || !isBareCommand(cache.codexCommand)) && commandWorks(cache.codexCommand)) {
     return cache.codexCommand;
   }
 
