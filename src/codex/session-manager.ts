@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { MessageCreateOptions, TextChannel } from "discord.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { TextChannel } from "discord.js";
 import {
   upsertSession,
   updateSessionStatus,
@@ -7,13 +10,13 @@ import {
   getSession,
   setAutoApprove,
 } from "../db/database.js";
-import { getConfig } from "../utils/config.js";
 import { L } from "../utils/i18n.js";
 import { codexAppServer } from "./app-server-client.js";
+import { fetchCodexUsage, getCodexUsageRows, getUsagePercentLeft, type CodexUsageData } from "./usage.js";
 import {
   createAskUserQuestionEmbed,
   createCompletedButton,
-  createResultEmbed,
+  createCompletionSummaryText,
   createStopButton,
   createToolApprovalEmbed,
   splitMessage,
@@ -35,6 +38,8 @@ interface QuestionPayload {
 }
 
 type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
+type QuestionAnswers = Record<string, { answers: string[] }>;
+type QuestionResponse = { action: "accept" | "cancel"; answers: QuestionAnswers; content: Record<string, string | string[]> };
 
 type StreamMessage = Awaited<ReturnType<TextChannel["send"]>>;
 type StreamState = {
@@ -43,6 +48,10 @@ type StreamState = {
   lastEditTime: number;
   stopRow: ReturnType<typeof createStopButton>;
   startedAt: number;
+  model: string | null;
+  reasoning: string | null;
+  contextStatus: string | null;
+  limitStatus: string | null;
   lastActivity: string;
   toolUseCount: number;
   heartbeat: NodeJS.Timeout;
@@ -61,13 +70,239 @@ const pendingApprovals = new Map<
 const pendingQuestions = new Map<
   number,
   {
-    resolve: (answer: Record<string, { answers: string[] }>) => void;
+    resolve: (answer: QuestionAnswers) => void;
     channelId: string;
     questionId: string;
   }
 >();
 
 const pendingCustomInputs = new Map<string, { requestId: number; questionId: string }>();
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isMcpElicitationRequest(method: string): boolean {
+  return method === "item/tool/requestUserInput" || method === "mcpServer/elicitation/request";
+}
+
+function getString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function getNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readPercentLeft(window: unknown): number | null {
+  if (!isObject(window)) return null;
+  const usedPercent = getNumber(window.used_percent) ?? getNumber(window.usedPercent);
+  if (usedPercent === null) return null;
+  return Math.max(0, Math.min(100, Math.round(100 - usedPercent)));
+}
+
+function readWindowMinutes(window: unknown): number | null {
+  if (!isObject(window)) return null;
+  return getNumber(window.window_minutes) ?? getNumber(window.windowDurationMins);
+}
+
+function formatWindowLabel(window: unknown, fallback: string): string {
+  const minutes = readWindowMinutes(window);
+  if (minutes === 300) return "5H";
+  if (minutes === 10080) return "W";
+  if (minutes && minutes % 60 === 0 && minutes < 10080) return `${minutes / 60}H`;
+  if (minutes) return `${minutes}M`;
+  return fallback;
+}
+
+function formatWindowLabelFromMinutes(minutes: number | undefined, fallback: string): string {
+  if (minutes === 300) return "5H";
+  if (minutes === 10080) return "W";
+  if (minutes && minutes % 60 === 0 && minutes < 10080) return `${minutes / 60}H`;
+  if (minutes) return `${minutes}M`;
+  return fallback;
+}
+
+function readCodexDefaultSettings(): { model: string | null; reasoning: string | null } {
+  try {
+    const raw = fs.readFileSync(path.join(os.homedir(), ".codex", "config.toml"), "utf8");
+    return {
+      model: raw.match(/^model\s*=\s*"([^"]+)"/m)?.[1] ?? null,
+      reasoning: raw.match(/^model_reasoning_effort\s*=\s*"([^"]+)"/m)?.[1] ?? null,
+    };
+  } catch {
+    return { model: null, reasoning: null };
+  }
+}
+
+export function formatLimitStatusFromUsage(usage: CodexUsageData | null): string | null {
+  if (!usage) return null;
+  const rows = getCodexUsageRows(usage);
+  const primary = rows.find((row) => row.window.windowDurationMins === 300)?.window ?? rows[0]?.window;
+  const secondary = rows.find((row) => row.window.windowDurationMins === 10080)?.window ?? rows[1]?.window;
+  const parts: string[] = [];
+
+  if (primary) {
+    parts.push(`${formatWindowLabelFromMinutes(primary.windowDurationMins, "5H")} ${getUsagePercentLeft(primary)}%`);
+  }
+  if (secondary) {
+    parts.push(`${formatWindowLabelFromMinutes(secondary.windowDurationMins, "W")} ${getUsagePercentLeft(secondary)}%`);
+  }
+
+  return parts.length > 0 ? parts.join(" - ") : null;
+}
+
+export function formatLimitStatusFromEvent(params: Record<string, unknown>): string | null {
+  const payload = isObject(params.payload) ? params.payload : params;
+  if (payload.type !== "token_count" && params.type !== "token_count") return null;
+
+  const rateLimits = isObject(payload.rate_limits)
+    ? payload.rate_limits
+    : isObject(payload.rateLimits)
+      ? payload.rateLimits
+      : null;
+  if (!rateLimits) return null;
+
+  const primary = rateLimits.primary;
+  const secondary = rateLimits.secondary;
+  const primaryLeft = readPercentLeft(primary);
+  const secondaryLeft = readPercentLeft(secondary);
+  const parts: string[] = [];
+
+  if (primaryLeft !== null) {
+    parts.push(`${formatWindowLabel(primary, "5H")} ${primaryLeft}%`);
+  }
+  if (secondaryLeft !== null) {
+    parts.push(`${formatWindowLabel(secondary, "W")} ${secondaryLeft}%`);
+  }
+
+  return parts.length > 0 ? parts.join(" - ") : null;
+}
+
+export function formatContextStatusFromEvent(params: Record<string, unknown>): string | null {
+  const payload = isObject(params.payload) ? params.payload : params;
+  if (payload.type !== "token_count" && params.type !== "token_count") return null;
+
+  const info = isObject(payload.info) ? payload.info : null;
+  if (!info) return null;
+  const lastUsage = isObject(info.last_token_usage)
+    ? info.last_token_usage
+    : isObject(info.lastTokenUsage)
+      ? info.lastTokenUsage
+      : null;
+  if (!lastUsage) return null;
+
+  const totalTokens = getNumber(lastUsage.total_tokens) ?? getNumber(lastUsage.totalTokens);
+  const contextWindow = getNumber(info.model_context_window) ?? getNumber(info.modelContextWindow);
+  if (totalTokens === null || contextWindow === null || contextWindow <= 0) return null;
+
+  return `${Math.max(0, Math.min(100, Math.round((totalTokens / contextWindow) * 100)))}%`;
+}
+
+function readFileTail(filePath: string, maxBytes = 512 * 1024): string {
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const stat = fs.fstatSync(fd);
+    const length = Math.min(stat.size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    fs.readSync(fd, buffer, 0, length, stat.size - length);
+    return buffer.toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+async function readLatestThreadTokenStats(
+  threadId: string,
+): Promise<{ contextStatus: string | null; limitStatus: string | null }> {
+  try {
+    const thread = await codexAppServer.readThread(threadId, false);
+    if (!thread.path) return { contextStatus: null, limitStatus: null };
+
+    const lines = readFileTail(thread.path).trimEnd().split("\n").reverse();
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>;
+        const payload = isObject(entry.payload) ? entry.payload : null;
+        if (payload?.type !== "token_count") continue;
+        return {
+          contextStatus: formatContextStatusFromEvent({ payload }),
+          limitStatus: formatLimitStatusFromEvent({ payload }),
+        };
+      } catch {
+        // Continue scanning older lines.
+      }
+    }
+  } catch {
+    // Fall through to no stats.
+  }
+
+  return { contextStatus: null, limitStatus: null };
+}
+
+async function fetchFreshLimitStatus(): Promise<string | null> {
+  try {
+    return formatLimitStatusFromUsage(await fetchCodexUsage());
+  } catch {
+    return null;
+  }
+}
+
+function getSchemaQuestions(params: Record<string, unknown>): QuestionPayload[] {
+  if (Array.isArray(params.questions)) return params.questions as QuestionPayload[];
+
+  const request = isObject(params.request) ? params.request : {};
+  const schema =
+    (isObject(params.requestedSchema) && params.requestedSchema) ||
+    (isObject(params.schema) && params.schema) ||
+    (isObject(request.requestedSchema) && request.requestedSchema) ||
+    (isObject(request.schema) && request.schema) ||
+    null;
+  const properties = schema && isObject(schema.properties) ? schema.properties : null;
+  const fallbackQuestion =
+    getString(params.message) ??
+    getString(request.message) ??
+    getString(params.prompt) ??
+    L("MCP server requested input.", "MCP 서버가 입력을 요청했습니다.");
+
+  if (!properties) {
+    return [
+      {
+        id: "response",
+        header: getString(params.serverName) ?? getString(params.server_name) ?? "MCP Request",
+        question: fallbackQuestion,
+      },
+    ];
+  }
+
+  return Object.entries(properties).map(([id, raw]) => {
+    const property = isObject(raw) ? raw : {};
+    const enumValues = Array.isArray(property.enum) ? property.enum : [];
+    return {
+      id,
+      header: getString(property.title) ?? id,
+      question: getString(property.description) ?? fallbackQuestion,
+      options: enumValues
+        .map((value) => getString(value))
+        .filter((value): value is string => Boolean(value))
+        .map((label) => ({ label, description: "" })),
+    };
+  });
+}
+
+export function shouldSuppressCodexStderr(line: string): boolean {
+  return (
+    line.includes(" WARN ") ||
+    (
+      line.includes("codex_core::tools::router") &&
+      line.includes("write_stdin failed:") &&
+      (
+        line.includes("stdin is closed for this session") ||
+        line.includes("Unknown process id")
+      )
+    )
+  );
+}
 
 export class SessionManager {
   private sessions = new Map<string, ActiveSession>();
@@ -96,7 +331,7 @@ export class SessionManager {
 
     codexAppServer.on("stderr", (line) => {
       const text = String(line);
-      if (!text.includes(" WARN ")) {
+      if (!shouldSuppressCodexStderr(text)) {
         console.warn("[codex]", text);
       }
     });
@@ -115,11 +350,23 @@ export class SessionManager {
     const dbSession = !existingSession ? getSession(channelId) : undefined;
     const dbId = existingSession?.dbId ?? dbSession?.id ?? randomUUID();
     let threadId = existingSession?.threadId ?? dbSession?.session_id ?? null;
+    let threadModel: string | null = null;
+    let threadReasoning: string | null = null;
+    const defaultSettings = readCodexDefaultSettings();
 
     try {
       if (!threadId) {
-        const thread = await codexAppServer.startThread(project.project_path);
+        const thread = await codexAppServer.startThread(project.project_path, {
+          model: project.codex_model,
+          reasoningEffort: project.reasoning_effort,
+        });
         threadId = thread.id;
+        threadModel = typeof (thread as { model?: unknown }).model === "string"
+          ? (thread as { model: string }).model
+          : null;
+        threadReasoning = typeof (thread as { reasoning_effort?: unknown }).reasoning_effort === "string"
+          ? (thread as { reasoning_effort: string }).reasoning_effort
+          : null;
       } else if (!existingSession) {
         await codexAppServer.resumeThread(threadId);
       }
@@ -173,6 +420,10 @@ export class SessionManager {
       lastEditTime: 0,
       stopRow,
       startedAt,
+      model: project.codex_model ?? threadModel ?? defaultSettings.model,
+      reasoning: project.reasoning_effort ?? threadReasoning ?? defaultSettings.reasoning,
+      contextStatus: null,
+      limitStatus: null,
       lastActivity: L("Thinking...", "생각 중..."),
       toolUseCount: 0,
       heartbeat,
@@ -201,10 +452,26 @@ export class SessionManager {
     const params = msg.params ?? {};
     const threadId = typeof params.threadId === "string" ? params.threadId : null;
     const active = threadId ? this.findActiveByThread(threadId) : undefined;
-    if (!active) return;
+    if (!active) {
+      const limitStatus = formatLimitStatusFromEvent(params);
+      const contextStatus = formatContextStatusFromEvent(params);
+      if (limitStatus && this.streamState.size === 1) {
+        const stream = [...this.streamState.values()][0];
+        stream.limitStatus = limitStatus;
+      }
+      if (contextStatus && this.streamState.size === 1) {
+        const stream = [...this.streamState.values()][0];
+        stream.contextStatus = contextStatus;
+      }
+      return;
+    }
 
     const channelId = active.channelId;
     const stream = this.streamState.get(channelId);
+    if (stream) {
+      stream.limitStatus = formatLimitStatusFromEvent(params) ?? stream.limitStatus;
+      stream.contextStatus = formatContextStatusFromEvent(params) ?? stream.contextStatus;
+    }
 
     switch (msg.method) {
       case "turn/started": {
@@ -298,12 +565,21 @@ export class SessionManager {
         }
 
         if (stream) {
-          await this.flushStream(channelId, true);
           const durationMs = Date.now() - stream.startedAt;
-          const payload: MessageCreateOptions = {
-            embeds: [createResultEmbed(L("Task completed", "작업 완료"), 0, durationMs, getConfig().SHOW_COST)],
-          };
-          await active.channel.send(payload).catch(() => {});
+          const tokenStats = await readLatestThreadTokenStats(active.threadId);
+          const limitStatus = tokenStats.limitStatus ?? stream.limitStatus ?? await fetchFreshLimitStatus();
+          const contextStatus = tokenStats.contextStatus ?? stream.contextStatus;
+          const completion = createCompletionSummaryText(durationMs, {
+            model: stream.model,
+            reasoning: stream.reasoning,
+            contextStatus,
+            limitStatus,
+          });
+          stream.buffer = stream.buffer.trimEnd()
+            ? `${stream.buffer.trimEnd()}\n\n${completion}`
+            : `${L("Task completed", "작업 완료")}\n\n${completion}`;
+          stream.hasTextOutput = true;
+          await this.flushStream(channelId, true);
         }
 
         updateSessionStatus(channelId, "idle");
@@ -322,18 +598,22 @@ export class SessionManager {
     const active = threadId ? this.findActiveByThread(threadId) : undefined;
 
     if (!active) {
-      await codexAppServer.respond(msg.id, { decision: "decline" });
+      const response =
+        isMcpElicitationRequest(msg.method)
+          ? { action: "cancel" }
+          : { decision: "decline" };
+      await codexAppServer.respond(msg.id, response);
       return;
     }
 
-    if (msg.method === "item/tool/requestUserInput") {
-      const answers = await this.askUserInput(
+    if (isMcpElicitationRequest(msg.method)) {
+      const response = await this.askUserInput(
         active.channel,
         active.channelId,
         msg.id,
-        (msg.params.questions as QuestionPayload[]) ?? [],
+        getSchemaQuestions(msg.params),
       );
-      await codexAppServer.respond(msg.id, { answers });
+      await codexAppServer.respond(msg.id, response);
       return;
     }
 
@@ -401,8 +681,10 @@ export class SessionManager {
     channelId: string,
     requestId: number,
     questions: QuestionPayload[],
-  ): Promise<Record<string, { answers: string[] }>> {
-    const answers: Record<string, { answers: string[] }> = {};
+  ): Promise<QuestionResponse> {
+    const answers: QuestionAnswers = {};
+    const content: Record<string, string | string[]> = {};
+    let canceled = false;
 
     for (let index = 0; index < questions.length; index++) {
       const question = questions[index];
@@ -421,11 +703,11 @@ export class SessionManager {
       updateSessionStatus(channelId, "waiting");
       await channel.send({ embeds: [embed], components });
 
-      const answer = await new Promise<Record<string, { answers: string[] }>>((resolve) => {
+      const answer = await new Promise<QuestionAnswers | null>((resolve) => {
         const timeout = setTimeout(() => {
           pendingQuestions.delete(requestId);
           pendingCustomInputs.delete(channelId);
-          resolve({ [question.id]: { answers: [] } });
+          resolve(null);
         }, 5 * 60 * 1000);
 
         pendingQuestions.set(requestId, {
@@ -439,11 +721,18 @@ export class SessionManager {
         });
       });
 
+      if (!answer) {
+        canceled = true;
+        break;
+      }
+
       answers[question.id] = answer[question.id] ?? { answers: [] };
+      const values = answers[question.id].answers;
+      content[question.id] = values.length <= 1 ? values[0] ?? "" : values;
     }
 
     updateSessionStatus(channelId, "online");
-    return answers;
+    return { action: canceled ? "cancel" : "accept", answers, content };
   }
 
   private async flushStream(channelId: string, final = false): Promise<void> {
@@ -555,7 +844,11 @@ export class SessionManager {
   }
 
   enableCustomInput(requestId: string, channelId: string, questionId = "answer"): void {
-    pendingCustomInputs.set(channelId, { requestId: Number(requestId), questionId });
+    const id = Number(requestId);
+    pendingCustomInputs.set(channelId, {
+      requestId: id,
+      questionId: pendingQuestions.get(id)?.questionId ?? questionId,
+    });
   }
 
   resolveCustomInput(channelId: string, text: string): boolean {

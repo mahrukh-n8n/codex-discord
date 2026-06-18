@@ -50,6 +50,11 @@ export interface CodexRateLimitsResponse {
   rateLimitsByLimitId?: Record<string, CodexRateLimitSnapshot>;
 }
 
+export interface CodexThreadStartOptions {
+  model?: string | null;
+  reasoningEffort?: string | null;
+}
+
 interface JsonRpcNotification {
   method: string;
   params?: Record<string, unknown>;
@@ -251,13 +256,18 @@ export class CodexAppServerClient extends EventEmitter {
     return result.thread;
   }
 
-  async startThread(cwd: string): Promise<CodexThreadSummary> {
-    const result = await this.request<{ thread: CodexThreadSummary }>("thread/start", {
+  async startThread(cwd: string, options: CodexThreadStartOptions = {}): Promise<CodexThreadSummary> {
+    const params: Record<string, unknown> = {
       cwd,
       approvalPolicy: "on-request",
       sandbox: "workspace-write",
       modelProvider: "openai",
-    });
+    };
+
+    if (options.model) params.model = options.model;
+    if (options.reasoningEffort) params.reasoningEffort = options.reasoningEffort;
+
+    const result = await this.request<{ thread: CodexThreadSummary }>("thread/start", params);
     return result.thread;
   }
 

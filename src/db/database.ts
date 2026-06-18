@@ -17,6 +17,8 @@ export function initDatabase(): void {
       project_path TEXT NOT NULL,
       guild_id TEXT NOT NULL,
       auto_approve INTEGER DEFAULT 0,
+      codex_model TEXT,
+      reasoning_effort TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -29,6 +31,16 @@ export function initDatabase(): void {
       created_at TEXT DEFAULT (datetime('now'))
     );
   `);
+
+  ensureColumn("projects", "codex_model", "TEXT");
+  ensureColumn("projects", "reasoning_effort", "TEXT");
+}
+
+function ensureColumn(table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((entry) => entry.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 export function getDb(): Database.Database {
@@ -71,6 +83,19 @@ export function setAutoApprove(
 ): void {
   db.prepare("UPDATE projects SET auto_approve = ? WHERE channel_id = ?").run(
     autoApprove ? 1 : 0,
+    channelId,
+  );
+}
+
+export function setProjectCodexSettings(
+  channelId: string,
+  model: string | null | undefined,
+  reasoningEffort: string | null | undefined,
+): void {
+  const current = getProject(channelId);
+  db.prepare("UPDATE projects SET codex_model = ?, reasoning_effort = ? WHERE channel_id = ?").run(
+    model === undefined ? current?.codex_model ?? null : model,
+    reasoningEffort === undefined ? current?.reasoning_effort ?? null : reasoningEffort,
     channelId,
   );
 }

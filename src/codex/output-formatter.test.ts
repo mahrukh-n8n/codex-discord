@@ -10,6 +10,7 @@ import {
   splitMessage,
   createToolApprovalEmbed,
   createResultEmbed,
+  createCompletionSummaryText,
   createAskUserQuestionEmbed,
   createStopButton,
   createCompletedButton,
@@ -182,31 +183,63 @@ describe("createToolApprovalEmbed", () => {
 // ─── createResultEmbed ───
 
 describe("createResultEmbed", () => {
+  it("shows model, reasoning, and duration in the title", () => {
+    const embed = createResultEmbed("Done", 0.0123, 5000, true, {
+      model: "gpt-5.5",
+      reasoning: "medium",
+    });
+
+    expect(embed.data.title).toBe("✅ Task Complete | gpt-5.5 / medium | 5.0s");
+  });
+
   it("shows cost in footer when showCost is true", () => {
     const embed = createResultEmbed("Done", 0.0123, 5000, true);
     const footer = embed.data.footer?.text ?? "";
     expect(footer).toContain("Cost");
     expect(footer).toContain("$0.0123");
-    expect(footer).toContain("Duration");
-    expect(footer).toContain("5.0s");
   });
 
-  it("hides cost in footer when showCost is false", () => {
+  it("hides footer when showCost is false", () => {
     const embed = createResultEmbed("Done", 0.0123, 5000, false);
-    const footer = embed.data.footer?.text ?? "";
-    expect(footer).not.toContain("Cost");
-    expect(footer).toContain("Duration : 5.0s");
+    expect(embed.data.footer).toBeUndefined();
+  });
+
+  it("hides zero-cost footer", () => {
+    const embed = createResultEmbed("Done", 0, 5000, true);
+    expect(embed.data.footer).toBeUndefined();
   });
 
   it("formats duration correctly", () => {
     const embed = createResultEmbed("Done", 0, 12500, true);
-    const footer = embed.data.footer?.text ?? "";
-    expect(footer).toContain("12.5s");
+    expect(embed.data.title).toContain("12.5s");
+  });
+
+  it("shows compact context limit status when present", () => {
+    const embed = createResultEmbed("Done", 0, 12500, false, {
+      limitStatus: "5H 85% - W 98%",
+    });
+
+    expect(embed.data.description).toBe("Done\nContext Used | 5H 85% - W 98% Limit");
   });
 
   it("truncates very long result text to 4000 chars", () => {
     const embed = createResultEmbed("x".repeat(5000), 0, 0);
     expect(embed.data.description!.length).toBeLessThanOrEqual(4000);
+  });
+});
+
+describe("createCompletionSummaryText", () => {
+  it("formats the inline completion summary", () => {
+    expect(createCompletionSummaryText(34_700, {
+      model: "gpt-5.5",
+      reasoning: "medium",
+      contextStatus: "39%",
+      limitStatus: "5H 81% - W 97%",
+    })).toBe([
+      "✅ Task Complete | gpt-5.5 / medium | 34.7s",
+      "Context Used | 39%",
+      "Limit | 5H 81% - W 97%",
+    ].join("\n"));
   });
 });
 

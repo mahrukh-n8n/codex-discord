@@ -4,6 +4,10 @@ dist/
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
 .claude/
 .codex
 .codex/

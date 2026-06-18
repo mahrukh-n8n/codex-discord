@@ -254,18 +254,60 @@ export function createResultEmbed(
   costUsd: number,
   durationMs: number,
   showCost: boolean = true,
+  options: {
+    model?: string | null;
+    reasoning?: string | null;
+    limitStatus?: string | null;
+  } = {},
 ): EmbedBuilder {
   const duration = `${(durationMs / 1000).toFixed(1)}s`;
-  const footer = showCost
-    ? `${L("Cost (est.)", "비용 (추정)")} : $${costUsd.toFixed(4)}  |  ${L("Duration", "소요 시간")} : ${duration}`
-    : `${L("Duration", "소요 시간")} : ${duration}`;
+  const modelReasoning = [options.model, options.reasoning].filter(Boolean).join(" / ");
+  const titleParts = [L("✅ Task Complete", "✅ 작업 완료")];
+  if (modelReasoning) titleParts.push(modelReasoning);
+  titleParts.push(duration);
+
+  const description = [
+    result.slice(0, 4000),
+    options.limitStatus
+      ? `${L("Context Used", "컨텍스트 사용량")} | ${options.limitStatus} ${L("Limit", "한도")}`
+      : null,
+  ].filter(Boolean).join("\n");
+
+  const footer = showCost && costUsd > 0
+    ? `${L("Cost (est.)", "비용 (추정)")} : $${costUsd.toFixed(4)}`
+    : null;
 
   const embed = new EmbedBuilder()
-    .setTitle(L("✅ Task Complete", "✅ 작업 완료"))
-    .setDescription(result.slice(0, 4000))
+    .setTitle(titleParts.join(" | "))
+    .setDescription(description)
     .setColor(0x00ff00)
-    .setFooter({ text: footer })
     .setTimestamp();
 
+  if (footer) {
+    embed.setFooter({ text: footer });
+  }
+
   return embed;
+}
+
+export function createCompletionSummaryText(
+  durationMs: number,
+  options: {
+    model?: string | null;
+    reasoning?: string | null;
+    contextStatus?: string | null;
+    limitStatus?: string | null;
+  } = {},
+): string {
+  const duration = `${(durationMs / 1000).toFixed(1)}s`;
+  const modelReasoning = [options.model, options.reasoning].filter(Boolean).join(" / ");
+  const titleParts = [L("✅ Task Complete", "✅ 작업 완료")];
+  if (modelReasoning) titleParts.push(modelReasoning);
+  titleParts.push(duration);
+
+  return [
+    titleParts.join(" | "),
+    options.contextStatus ? `${L("Context Used", "컨텍스트 사용량")} | ${options.contextStatus}` : null,
+    options.limitStatus ? `${L("Limit", "한도")} | ${options.limitStatus}` : null,
+  ].filter(Boolean).join("\n");
 }

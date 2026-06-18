@@ -19,6 +19,7 @@ import {
   getProject,
   getAllProjects,
   setAutoApprove,
+  setProjectCodexSettings,
   upsertSession,
   getSession,
   updateSessionStatus,
@@ -40,6 +41,8 @@ describe("database", () => {
       expect(project!.project_path).toBe("/path/to/project");
       expect(project!.guild_id).toBe("guild1");
       expect(project!.auto_approve).toBe(0);
+      expect(project!.codex_model).toBeNull();
+      expect(project!.reasoning_effort).toBeNull();
     });
 
     it("registerProject with same channelId replaces existing", () => {
@@ -79,6 +82,22 @@ describe("database", () => {
 
       setAutoApprove("ch1", false);
       expect(getProject("ch1")!.auto_approve).toBe(0);
+    });
+
+    it("setProjectCodexSettings updates model and reasoning independently", () => {
+      registerProject("ch1", "/p1", "guild1");
+
+      setProjectCodexSettings("ch1", "gpt-5.5", "high");
+      expect(getProject("ch1")!.codex_model).toBe("gpt-5.5");
+      expect(getProject("ch1")!.reasoning_effort).toBe("high");
+
+      setProjectCodexSettings("ch1", undefined, "low");
+      expect(getProject("ch1")!.codex_model).toBe("gpt-5.5");
+      expect(getProject("ch1")!.reasoning_effort).toBe("low");
+
+      setProjectCodexSettings("ch1", null, null);
+      expect(getProject("ch1")!.codex_model).toBeNull();
+      expect(getProject("ch1")!.reasoning_effort).toBeNull();
     });
   });
 

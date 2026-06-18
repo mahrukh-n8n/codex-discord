@@ -47,6 +47,8 @@ export async function execute(
         `\`${project.project_path}\``,
         `${L("Status", "상태")}: **${status}**`,
         `${L("Auto-approve", "자동 승인")}: ${project.auto_approve ? L("On", "켜짐") : L("Off", "꺼짐")}`,
+        `${L("Model", "모델")}: ${project.codex_model ? `\`${project.codex_model}\`` : "`default`"}`,
+        `${L("Reasoning", "추론")}: ${project.reasoning_effort ? `\`${project.reasoning_effort}\`` : "`default`"}`,
         `${L("Last activity", "마지막 활동")}: ${lastActivity}`,
       ].join("\n"),
       inline: false,
