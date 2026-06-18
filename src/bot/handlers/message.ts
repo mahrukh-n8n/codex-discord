@@ -2,6 +2,7 @@ import { Message, TextChannel, Attachment, ActionRowBuilder, ButtonBuilder, Butt
 import { getProject } from "../../db/database.js";
 import { isAllowedUser, checkRateLimit } from "../../security/guard.js";
 import { sessionManager } from "../../codex/session-manager.js";
+import { isAudioAttachment, transcribeAudioFile } from "../../codex/audio-transcription.js";
 import fs from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -9,6 +10,20 @@ import { Readable } from "node:stream";
 import { L } from "../../utils/i18n.js";
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+const MIME_EXTENSION_MAP: Record<string, string> = {
+  "audio/aac": ".aac",
+  "audio/flac": ".flac",
+  "audio/mp3": ".mp3",
+  "audio/mp4": ".m4a",
+  "audio/mpeg": ".mp3",
+  "audio/ogg": ".ogg",
+  "audio/opus": ".opus",
+  "audio/wav": ".wav",
+  "audio/wave": ".wav",
+  "audio/webm": ".webm",
+  "audio/x-m4a": ".m4a",
+  "audio/x-wav": ".wav",
+};
 const BLOCKED_EXTENSIONS = new Set([
   ".exe", ".bat", ".cmd", ".com", ".msi", ".scr", ".pif",
   ".dll", ".sys", ".drv",
@@ -19,8 +34,10 @@ const MAX_FILE_SIZE = 25 * 1024 * 1024;
 async function downloadAttachment(
   attachment: Attachment,
   projectPath: string,
-): Promise<{ filePath: string; isImage: boolean } | { skipped: string } | null> {
-  const ext = path.extname(attachment.name ?? "").toLowerCase();
+): Promise<{ filePath: string; isImage: boolean; isAudio: boolean; mimeType: string } | { skipped: string } | null> {
+  const normalizedContentType = attachment.contentType?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  const nameExt = path.extname(attachment.name ?? "").toLowerCase();
+  const ext = nameExt || MIME_EXTENSION_MAP[normalizedContentType] || "";
 
   if (BLOCKED_EXTENSIONS.has(ext)) {
     return { skipped: L(`Blocked: \`${attachment.name}\` (dangerous file type)`, `차단됨: \`${attachment.name}\` (위험한 파일 형식)`) };
@@ -36,7 +53,8 @@ async function downloadAttachment(
     fs.mkdirSync(uploadDir, { recursive: true });
   }
 
-  const fileName = `${Date.now()}-${attachment.name}`;
+  const baseName = attachment.name?.trim() || `attachment${ext || ""}`;
+  const fileName = `${Date.now()}-${baseName}`;
   const filePath = path.join(uploadDir, fileName);
 
   try {
@@ -52,7 +70,12 @@ async function downloadAttachment(
     return { skipped: L(`Failed to download: \`${attachment.name}\``, `다운로드 실패: \`${attachment.name}\``) };
   }
 
-  return { filePath, isImage: IMAGE_EXTENSIONS.has(ext) };
+  return {
+    filePath,
+    isImage: IMAGE_EXTENSIONS.has(ext),
+    isAudio: isAudioAttachment(baseName, normalizedContentType),
+    mimeType: normalizedContentType || "application/octet-stream",
+  };
 }
 
 export async function handleMessage(message: Message): Promise<void> {
@@ -83,6 +106,7 @@ export async function handleMessage(message: Message): Promise<void> {
   let prompt = message.content.trim();
   const imagePaths: string[] = [];
   const filePaths: string[] = [];
+  const audioTranscripts: string[] = [];
   const skippedMessages: string[] = [];
 
   for (const [, attachment] of message.attachments) {
@@ -92,8 +116,32 @@ export async function handleMessage(message: Message): Promise<void> {
       skippedMessages.push(result.skipped);
       continue;
     }
+    console.log(
+      `[attachments] ${attachment.name ?? path.basename(result.filePath)} ` +
+      `image=${result.isImage} audio=${result.isAudio} mime=${result.mimeType}`,
+    );
     if (result.isImage) {
       imagePaths.push(result.filePath);
+    } else if (result.isAudio) {
+      try {
+        console.log(`[audio] Starting transcription for ${attachment.name ?? path.basename(result.filePath)}`);
+        const transcript = await transcribeAudioFile(result.filePath, result.mimeType);
+        audioTranscripts.push(
+          [
+            `[Transcribed audio: ${attachment.name ?? path.basename(result.filePath)}]`,
+            transcript,
+          ].join("\n"),
+        );
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.warn(`[audio] Transcription failed for ${attachment.name ?? path.basename(result.filePath)}: ${reason}`);
+        skippedMessages.push(
+          L(
+            `Failed to transcribe: \`${attachment.name ?? path.basename(result.filePath)}\` (${reason})`,
+            `전사 실패: \`${attachment.name ?? path.basename(result.filePath)}\` (${reason})`,
+          ),
+        );
+      }
     } else {
       filePaths.push(result.filePath);
     }
@@ -105,6 +153,9 @@ export async function handleMessage(message: Message): Promise<void> {
 
   if (imagePaths.length > 0) {
     prompt += `\n\n[Attached images - inspect these local files]\n${imagePaths.join("\n")}`;
+  }
+  if (audioTranscripts.length > 0) {
+    prompt += `\n\n[Audio transcripts]\n${audioTranscripts.join("\n\n")}`;
   }
   if (filePaths.length > 0) {
     prompt += `\n\n[Attached files - inspect these local files]\n${filePaths.join("\n")}`;

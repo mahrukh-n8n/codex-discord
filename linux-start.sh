@@ -111,19 +111,19 @@ if [ "$1" = "--regen-service" ]; then
 Description=Codex Discord Bot
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 WorkingDirectory=$SCRIPT_DIR
 Environment=HOME=$HOME
-Environment=PATH=$(dirname "$NODE_BIN")${CODEX_DIR:+:$CODEX_DIR}:$PATH
+Environment=PATH=$(dirname "$NODE_BIN")${CODEX_DIR:+:$CODEX_DIR}:$HOME/.local/bin:$PATH
 Environment=NODE_PATH=$(dirname "$NODE_BIN")
 ExecStartPre=/bin/bash -c 'touch $SCRIPT_DIR/.bot.lock'
 ExecStart=$NODE_BIN $SCRIPT_DIR/dist/index.js
 ExecStopPost=/bin/bash -c 'rm -f $SCRIPT_DIR/.bot.lock'
 Restart=on-failure
 RestartSec=10
-StartLimitIntervalSec=0
 StandardOutput=append:$SCRIPT_DIR/bot.log
 StandardError=append:$SCRIPT_DIR/bot-error.log
 
@@ -212,19 +212,19 @@ cat > "$SERVICE_FILE" << EOF
 Description=Codex Discord Bot
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 WorkingDirectory=$SCRIPT_DIR
 Environment=HOME=$HOME
-Environment=PATH=$(dirname "$NODE_BIN")${CODEX_DIR:+:$CODEX_DIR}:$PATH
+Environment=PATH=$(dirname "$NODE_BIN")${CODEX_DIR:+:$CODEX_DIR}:$HOME/.local/bin:$PATH
 Environment=NODE_PATH=$(dirname "$NODE_BIN")
 ExecStartPre=/bin/bash -c 'touch $SCRIPT_DIR/.bot.lock'
 ExecStart=$NODE_BIN $SCRIPT_DIR/dist/index.js
 ExecStopPost=/bin/bash -c 'rm -f $SCRIPT_DIR/.bot.lock'
 Restart=on-failure
 RestartSec=10
-StartLimitIntervalSec=0
 StandardOutput=append:$SCRIPT_DIR/bot.log
 StandardError=append:$SCRIPT_DIR/bot-error.log
 

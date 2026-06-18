@@ -85,13 +85,42 @@ fi
 echo ""
 
 # --- 3. npm install ---
-echo "[3/5] Installing project dependencies..."
+echo "[3/6] Installing project dependencies..."
 npm install
 echo "  ✅ Done"
 echo ""
 
-# --- 4. .env ---
-echo "[4/5] Checking .env file..."
+# --- 4. Local audio transcription helper ---
+echo "[4/6] Checking local audio transcription helper..."
+if command -v python3 &>/dev/null; then
+  echo "  Found Python $(python3 --version)"
+else
+  echo "  ⚠ Python 3 is required for local audio transcription."
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    if command -v brew &>/dev/null; then
+      brew install python
+    else
+      echo "  Install Python 3 from https://python.org or Homebrew."
+    fi
+  else
+    sudo apt-get install -y python3 2>/dev/null || true
+  fi
+fi
+
+if command -v uv &>/dev/null || [ -x "$HOME/.local/bin/uv" ]; then
+  echo "  Found uv"
+elif command -v python3 &>/dev/null && python3 -m pip --version &>/dev/null; then
+  echo "  Installing uv for bot-local STT bootstrap..."
+  python3 -m pip install --user uv
+else
+  echo "  ⚠ uv not found. Audio transcription can still use python3-venv if installed."
+  echo "  If transcription setup fails, install uv or python3-venv."
+fi
+echo "  ✅ OK"
+echo ""
+
+# --- 5. .env ---
+echo "[5/6] Checking .env file..."
 if [ -f .env ]; then
   echo "  .env already exists"
   echo "  ✅ OK"
@@ -101,8 +130,8 @@ else
 fi
 echo ""
 
-# --- 5. Build ---
-echo "[5/5] Building project..."
+# --- 6. Build ---
+echo "[6/6] Building project..."
 npm run build
 echo "  ✅ Done"
 echo ""

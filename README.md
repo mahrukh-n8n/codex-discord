@@ -46,6 +46,7 @@ Because it reads local Codex thread storage under `~/.codex`, threads created in
 - Stop active turns from a button or `/stop`
 - Queue follow-up prompts while a task is already running
 - Attachment support for images and files
+- Audio attachments are transcribed locally before being forwarded to Codex
 - Codex usage snapshot from Discord with `/usage`
 - Completion summaries are appended to the final streamed reply with model, reasoning, context, and limit status when available
 - Desktop control panels on Linux and Windows can also show the same cached Codex usage snapshot
@@ -81,6 +82,8 @@ Because it reads local Codex thread storage under `~/.codex`, threads created in
 - Logged in locally with `codex login`
 - A Discord bot token
 - A Discord server ID and allowed user ID list
+- Python 3 for local audio transcription
+- `uv` or `python3-venv` for the bot-owned transcription runtime bootstrap on Linux
 
 ## Installation
 
@@ -228,9 +231,12 @@ When you attach files in Discord:
 
 - files are downloaded into `<project>/.codex-uploads/`
 - images are appended to the prompt as local file paths
+- audio attachments are transcribed with a bot-local lazy-installed `faster-whisper` runtime, and the transcript is appended to the prompt
 - non-image files are also appended as local file references
 - blocked executable types are rejected
 - files over 25 MB are skipped
+
+Audio transcription does not use OpenAI audio APIs, Codex auth, or Hermes. On the first audio message, the bot creates `~/.codex-discord/stt-venv`, installs `faster-whisper==1.2.1`, and uses the local `base` Whisper model. If `python3 -m venv` is unavailable on Ubuntu/Debian because `python3-venv` is missing, the bot falls back to `uv venv` and `uv pip install`.
 
 ## Codex Session Behavior
 
@@ -299,6 +305,15 @@ The context percentage comes from Codex token-count data for the turn. The limit
 - if a desktop session is available, it also starts the tray app
 - the tray menu can open a separate Linux control panel for status, usage, and bot controls
 - `./linux-start.sh --fg` runs foreground mode for debugging
+- generated systemd services include `~/.local/bin` in `PATH` so a user-installed `uv` can bootstrap local audio transcription
+
+If local audio transcription fails during the first audio message, check `bot-error.log`. On Ubuntu/Debian, either install `python3-venv` or install `uv`:
+
+```bash
+python3 -m pip install --user uv
+```
+
+The installer attempts to prepare this automatically when `pip` is available.
 
 ### Windows
 
@@ -357,6 +372,10 @@ codex-discord/
 - Suppressed duplicate non-actionable `write_stdin` stderr noise while keeping real Codex errors visible.
 - Changed task completion reporting to append a compact summary to the final streamed reply.
 - Added context and Codex rate-limit status to completion summaries when available.
+- Added local audio attachment transcription before forwarding prompts to Codex.
+- Added a bot-owned lazy `faster-whisper` STT runtime under `~/.codex-discord/stt-venv`.
+- Added `uv` fallback for STT venv creation when Linux lacks `python3-venv` / `ensurepip`.
+- Updated Linux service generation so systemd can find user-installed tools in `~/.local/bin`.
 - Hardened `.gitignore` for runtime logs and SQLite files.
 
 ## License
