@@ -151,14 +151,18 @@ export async function handleMessage(message: Message): Promise<void> {
     await message.reply(skippedMessages.join("\n"));
   }
 
-  if (imagePaths.length > 0) {
-    prompt += `\n\n[Attached images - inspect these local files]\n${imagePaths.join("\n")}`;
-  }
   if (audioTranscripts.length > 0) {
     prompt += `\n\n[Audio transcripts]\n${audioTranscripts.join("\n\n")}`;
   }
   if (filePaths.length > 0) {
     prompt += `\n\n[Attached files - inspect these local files]\n${filePaths.join("\n")}`;
+  }
+
+  if (!prompt && imagePaths.length > 0) {
+    prompt = L(
+      "Inspect the attached image and answer the user's request based on what you can see.",
+      "첨부된 이미지를 확인하고 보이는 내용을 바탕으로 답하세요.",
+    );
   }
 
   if (!prompt) return;
@@ -175,7 +179,7 @@ export async function handleMessage(message: Message): Promise<void> {
       return;
     }
 
-    sessionManager.setPendingQueue(message.channelId, channel, prompt);
+    sessionManager.setPendingQueue(message.channelId, channel, { prompt, imagePaths });
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
@@ -197,5 +201,5 @@ export async function handleMessage(message: Message): Promise<void> {
     return;
   }
 
-  await sessionManager.sendMessage(channel, prompt);
+  await sessionManager.sendMessage(channel, { prompt, imagePaths });
 }

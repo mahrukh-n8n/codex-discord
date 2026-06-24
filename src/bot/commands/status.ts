@@ -49,6 +49,7 @@ export async function execute(
         `${L("Auto-approve", "자동 승인")}: ${project.auto_approve ? L("On", "켜짐") : L("Off", "꺼짐")}`,
         `${L("Model", "모델")}: ${project.codex_model ? `\`${project.codex_model}\`` : "`default`"}`,
         `${L("Reasoning", "추론")}: ${project.reasoning_effort ? `\`${project.reasoning_effort}\`` : "`default`"}`,
+        `${L("Plan mode", "계획 모드")}: ${project.collaboration_mode ? `\`${project.collaboration_mode}\`` : "`default`"}`,
         `${L("Last activity", "마지막 활동")}: ${lastActivity}`,
       ].join("\n"),
       inline: false,

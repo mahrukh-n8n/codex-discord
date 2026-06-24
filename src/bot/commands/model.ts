@@ -15,6 +15,7 @@ export interface CachedCodexModel {
   slug: string;
   display_name?: string;
   supported_reasoning_levels?: Array<{ effort?: string; description?: string }>;
+  input_modalities?: string[];
   visibility?: string;
 }
 

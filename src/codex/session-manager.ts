@@ -11,7 +11,7 @@ import {
   setAutoApprove,
 } from "../db/database.js";
 import { L } from "../utils/i18n.js";
-import { codexAppServer } from "./app-server-client.js";
+import { codexAppServer, type CodexTurnInput } from "./app-server-client.js";
 import { fetchCodexUsage, getCodexUsageRows, getUsagePercentLeft, type CodexUsageData } from "./usage.js";
 import {
   createAskUserQuestionEmbed,
@@ -21,6 +21,7 @@ import {
   createToolApprovalEmbed,
   splitMessage,
 } from "./output-formatter.js";
+import { loadCachedCodexModels } from "../bot/commands/model.js";
 
 interface ActiveSession {
   channelId: string;
@@ -57,6 +58,12 @@ type StreamState = {
   heartbeat: NodeJS.Timeout;
   hasTextOutput: boolean;
   lastError: string | null;
+};
+
+type ThreadContextSnapshot = {
+  model: string | null;
+  reasoning: string | null;
+  collaborationMode: string | null;
 };
 
 const pendingApprovals = new Map<
@@ -133,6 +140,76 @@ function readCodexDefaultSettings(): { model: string | null; reasoning: string |
   } catch {
     return { model: null, reasoning: null };
   }
+}
+
+function normalizeCollaborationMode(mode: string | null | undefined): string {
+  return mode?.trim().toLowerCase() || "default";
+}
+
+function supportsImageInput(model: string | null): boolean | null {
+  if (!model) return null;
+  const cached = loadCachedCodexModels().find((entry) => entry.slug === model);
+  const modalities = Array.isArray((cached as { input_modalities?: unknown }).input_modalities)
+    ? (cached as { input_modalities: unknown[] }).input_modalities
+    : null;
+  if (!modalities) return null;
+  return modalities.includes("image");
+}
+
+async function readLatestThreadContext(threadId: string): Promise<ThreadContextSnapshot> {
+  try {
+    const thread = await codexAppServer.readThread(threadId, false);
+    if (!thread.path) {
+      return { model: null, reasoning: null, collaborationMode: null };
+    }
+
+    const lines = readFileTail(thread.path).trimEnd().split("\n").reverse();
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>;
+        const payload = isObject(entry.payload) ? entry.payload : null;
+        if (payload?.type !== "turn_context") continue;
+        const collaborationMode = isObject(payload.collaboration_mode)
+          ? getString(payload.collaboration_mode.mode)
+          : getString(payload.collaboration_mode);
+        return {
+          model: getString(payload.model),
+          reasoning: getString(payload.reasoning_effort),
+          collaborationMode,
+        };
+      } catch {
+        // Continue scanning older lines.
+      }
+    }
+  } catch {
+    // Fall through to empty context.
+  }
+
+  return { model: null, reasoning: null, collaborationMode: null };
+}
+
+async function shouldStartFreshThreadForInput(
+  threadId: string,
+  turnInput: CodexTurnInput,
+  project: ReturnType<typeof getProject>,
+  defaultSettings: { model: string | null; reasoning: string | null },
+): Promise<boolean> {
+  const threadContext = await readLatestThreadContext(threadId);
+  const desiredModel = project?.codex_model ?? defaultSettings.model;
+
+  if (desiredModel && threadContext.model && desiredModel !== threadContext.model) {
+    return true;
+  }
+
+  if ((turnInput.imagePaths?.length ?? 0) > 0) {
+    const activeModel = threadContext.model ?? desiredModel;
+    const imageSupport = supportsImageInput(activeModel);
+    if (imageSupport !== true) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export function formatLimitStatusFromUsage(usage: CodexUsageData | null): string | null {
@@ -308,8 +385,8 @@ export class SessionManager {
   private sessions = new Map<string, ActiveSession>();
   private initialized = false;
   private static readonly MAX_QUEUE_SIZE = 5;
-  private messageQueue = new Map<string, { channel: TextChannel; prompt: string }[]>();
-  private pendingQueuePrompts = new Map<string, { channel: TextChannel; prompt: string }>();
+  private messageQueue = new Map<string, { channel: TextChannel; input: CodexTurnInput }[]>();
+  private pendingQueuePrompts = new Map<string, { channel: TextChannel; input: CodexTurnInput }>();
   private streamState = new Map<string, StreamState>();
 
   private async ensureInitialized(): Promise<void> {
@@ -339,8 +416,9 @@ export class SessionManager {
     this.initialized = true;
   }
 
-  async sendMessage(channel: TextChannel, prompt: string): Promise<void> {
+  async sendMessage(channel: TextChannel, input: string | CodexTurnInput): Promise<void> {
     await this.ensureInitialized();
+    const turnInput: CodexTurnInput = typeof input === "string" ? { prompt: input } : input;
 
     const channelId = channel.id;
     const project = getProject(channelId);
@@ -355,10 +433,18 @@ export class SessionManager {
     const defaultSettings = readCodexDefaultSettings();
 
     try {
+      if (threadId && !existingSession) {
+        const rotateThread = await shouldStartFreshThreadForInput(threadId, turnInput, project, defaultSettings);
+        if (rotateThread) {
+          threadId = null;
+        }
+      }
+
       if (!threadId) {
         const thread = await codexAppServer.startThread(project.project_path, {
           model: project.codex_model,
           reasoningEffort: project.reasoning_effort,
+          collaborationMode: project.collaboration_mode,
         });
         threadId = thread.id;
         threadModel = typeof (thread as { model?: unknown }).model === "string"
@@ -440,7 +526,7 @@ export class SessionManager {
     });
 
     try {
-      await codexAppServer.startTurn(threadId, prompt);
+      await codexAppServer.startTurn(threadId, turnInput);
     } catch (error) {
       await channel.send(`❌ ${error instanceof Error ? error.message : "Failed to start Codex turn"}`);
       updateSessionStatus(channelId, "offline");
@@ -803,12 +889,12 @@ export class SessionManager {
       const next = queue.shift()!;
       if (queue.length === 0) this.messageQueue.delete(channelId);
       const remaining = queue.length;
-      const preview = next.prompt.length > 40 ? next.prompt.slice(0, 40) + "…" : next.prompt;
+      const preview = next.input.prompt.length > 40 ? next.input.prompt.slice(0, 40) + "…" : next.input.prompt;
       const msg = remaining > 0
         ? L(`📨 Processing queued message... (remaining: ${remaining})\n> ${preview}`, `📨 대기 중이던 메시지를 처리합니다... (남은 큐: ${remaining}개)\n> ${preview}`)
         : L(`📨 Processing queued message...\n> ${preview}`, `📨 대기 중이던 메시지를 처리합니다...\n> ${preview}`);
       next.channel.send(msg).catch(() => {});
-      this.sendMessage(next.channel, next.prompt).catch((err) => {
+      this.sendMessage(next.channel, next.input).catch((err) => {
         console.error("Queue sendMessage error:", err);
       });
     }
@@ -866,8 +952,11 @@ export class SessionManager {
     return pendingCustomInputs.has(channelId);
   }
 
-  setPendingQueue(channelId: string, channel: TextChannel, prompt: string): void {
-    this.pendingQueuePrompts.set(channelId, { channel, prompt });
+  setPendingQueue(channelId: string, channel: TextChannel, input: string | CodexTurnInput): void {
+    this.pendingQueuePrompts.set(channelId, {
+      channel,
+      input: typeof input === "string" ? { prompt: input } : input,
+    });
   }
 
   confirmQueue(channelId: string): boolean {
@@ -898,7 +987,10 @@ export class SessionManager {
   }
 
   getQueue(channelId: string): { channel: TextChannel; prompt: string }[] {
-    return this.messageQueue.get(channelId) ?? [];
+    return (this.messageQueue.get(channelId) ?? []).map((entry) => ({
+      channel: entry.channel,
+      prompt: entry.input.prompt,
+    }));
   }
 
   clearQueue(channelId: string): number {
@@ -914,7 +1006,7 @@ export class SessionManager {
     if (index < 0 || index >= queue.length) return null;
     const [removed] = queue.splice(index, 1);
     if (queue.length === 0) this.messageQueue.delete(channelId);
-    return removed.prompt;
+    return removed.input.prompt;
   }
 }
 

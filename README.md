@@ -43,6 +43,7 @@ Because it reads local Codex thread storage under `~/.codex`, threads created in
 - Interactive user-input questions from Codex surfaced in Discord
 - MCP elicitation requests from Codex are handled through Discord prompts
 - Per-channel Codex model and reasoning-effort settings with autocomplete
+- Per-channel Codex plan/code collaboration mode with `/plan`
 - Stop active turns from a button or `/stop`
 - Queue follow-up prompts while a task is already running
 - Attachment support for images and files
@@ -190,6 +191,7 @@ For setup screenshots and the full step-by-step install guide, see [SETUP.md](SE
 | `/sessions` | List and resume existing local Codex sessions for the project |
 | `/last` | Show the last assistant response from the current session |
 | `/usage` | Show Codex rate-limit usage from your local account |
+| `/plan on\|off\|default [new_session]` | Toggle Codex plan/code collaboration mode for this channel |
 | `/queue list` | Show queued prompts for this channel |
 | `/queue clear` | Clear queued prompts |
 | `/clear-sessions` | Remove stored session mappings for the current project |
@@ -212,6 +214,16 @@ Use `/model` in a registered channel to view or set Codex settings for that proj
 - `new_session:true` prepares a fresh session so the next normal message starts a new Codex thread with the selected settings
 
 These settings are stored in the local SQLite project mapping and apply when the bot starts a new Codex thread. Existing Codex threads keep their own original model/reasoning behavior.
+
+### Plan Mode
+
+Use `/plan` in a registered channel to switch Codex collaboration mode.
+
+- `mode:on` uses Codex plan mode
+- `mode:off` uses Codex code mode
+- `mode:default` lets Codex use its default collaboration mode
+- the saved setting applies when the next new Codex thread starts
+- `new_session:true` prepares a fresh session so the next normal message starts with the selected mode
 
 ## Project Path Model
 
@@ -367,6 +379,7 @@ codex-discord/
 - Added DB fields and migrations for per-project Codex model settings.
 - Passed selected model and reasoning effort into new Codex app-server threads.
 - Added model and reasoning details to `/status`.
+- Added `/plan` to toggle per-channel Codex plan/code collaboration mode.
 - Fixed MCP elicitation responses by returning the required `action` field and structured content.
 - Added cancellation handling for stale MCP/user-input requests.
 - Suppressed duplicate non-actionable `write_stdin` stderr noise while keeping real Codex errors visible.

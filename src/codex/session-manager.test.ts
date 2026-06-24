@@ -1,4 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 vi.mock("../db/database.js", () => ({
   upsertSession: vi.fn(),
@@ -34,6 +37,7 @@ import { SessionManager, formatContextStatusFromEvent, formatLimitStatusFromEven
 import { codexAppServer } from "./app-server-client.js";
 import { createStopButton, splitMessage } from "./output-formatter.js";
 import { getProject, getSession } from "../db/database.js";
+import * as modelCommands from "../bot/commands/model.js";
 
 function createFakeMessage() {
   return {
@@ -170,6 +174,7 @@ describe("SessionManager streaming output", () => {
       auto_approve: 0,
       codex_model: "gpt-5.5",
       reasoning_effort: "high",
+      collaboration_mode: "plan",
       created_at: "now",
     });
     vi.mocked(getSession).mockReturnValue(undefined);
@@ -182,12 +187,119 @@ describe("SessionManager streaming output", () => {
       send: vi.fn().mockResolvedValue(createFakeMessage()),
     } as any;
 
-    await manager.sendMessage(channel, "hello");
+    await manager.sendMessage(channel, {
+      prompt: "hello",
+      imagePaths: ["/project/.codex-uploads/image.png"],
+    });
 
     expect(codexAppServer.startThread).toHaveBeenCalledWith("/project", {
       model: "gpt-5.5",
       reasoningEffort: "high",
+      collaborationMode: "plan",
     });
+    expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-model", {
+      prompt: "hello",
+      imagePaths: ["/project/.codex-uploads/image.png"],
+    });
+  });
+
+  it("starts a fresh thread when the saved session model cannot handle images", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-thread-"));
+    const threadPath = path.join(tempDir, "thread.jsonl");
+    fs.writeFileSync(
+      threadPath,
+      `${JSON.stringify({ payload: { type: "turn_context", model: "gpt-5.3-codex-spark", reasoning_effort: "low", collaboration_mode: { mode: "default" } } })}\n`,
+    );
+
+    vi.spyOn(modelCommands, "loadCachedCodexModels").mockReturnValue([
+      { slug: "gpt-5.3-codex-spark", input_modalities: ["text"] },
+    ]);
+    vi.mocked(getProject).mockReturnValue({
+      channel_id: "channel-image-rotate",
+      project_path: "/project",
+      guild_id: "guild",
+      auto_approve: 0,
+      codex_model: "gpt-5.5",
+      reasoning_effort: "high",
+      collaboration_mode: null,
+      created_at: "now",
+    });
+    vi.mocked(getSession).mockReturnValue({
+      id: "db-session-1",
+      channel_id: "channel-image-rotate",
+      session_id: "thread-old",
+      status: "idle",
+      last_activity: null,
+      created_at: "now",
+    });
+    vi.mocked(codexAppServer.readThread).mockResolvedValue({ path: threadPath } as any);
+    vi.mocked(codexAppServer.startThread).mockResolvedValue({ id: "thread-new" } as any);
+    vi.mocked(codexAppServer.startTurn).mockResolvedValue({ id: "turn-new" });
+
+    const manager = new SessionManager();
+    const channel = {
+      id: "channel-image-rotate",
+      send: vi.fn().mockResolvedValue(createFakeMessage()),
+    } as any;
+
+    await manager.sendMessage(channel, {
+      prompt: "read this image",
+      imagePaths: ["/project/.codex-uploads/test.png"],
+    });
+
+    expect(codexAppServer.resumeThread).not.toHaveBeenCalled();
+    expect(codexAppServer.startThread).toHaveBeenCalledWith("/project", {
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      collaborationMode: null,
+    });
+    expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-new", {
+      prompt: "read this image",
+      imagePaths: ["/project/.codex-uploads/test.png"],
+    });
+  });
+
+  it("reuses the saved session when only the project mode differs", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-thread-"));
+    const threadPath = path.join(tempDir, "thread.jsonl");
+    fs.writeFileSync(
+      threadPath,
+      `${JSON.stringify({ payload: { type: "turn_context", model: "gpt-5.5", reasoning_effort: "high", collaboration_mode: { mode: "default" } } })}\n`,
+    );
+
+    vi.mocked(getProject).mockReturnValue({
+      channel_id: "channel-plan-rotate",
+      project_path: "/project",
+      guild_id: "guild",
+      auto_approve: 0,
+      codex_model: "gpt-5.5",
+      reasoning_effort: "high",
+      collaboration_mode: "plan",
+      created_at: "now",
+    });
+    vi.mocked(getSession).mockReturnValue({
+      id: "db-session-2",
+      channel_id: "channel-plan-rotate",
+      session_id: "thread-old",
+      status: "idle",
+      last_activity: null,
+      created_at: "now",
+    });
+    vi.mocked(codexAppServer.readThread).mockResolvedValue({ path: threadPath } as any);
+    vi.mocked(codexAppServer.resumeThread).mockResolvedValue({ id: "thread-old" } as any);
+    vi.mocked(codexAppServer.startTurn).mockResolvedValue({ id: "turn-plan" });
+
+    const manager = new SessionManager();
+    const channel = {
+      id: "channel-plan-rotate",
+      send: vi.fn().mockResolvedValue(createFakeMessage()),
+    } as any;
+
+    await manager.sendMessage(channel, "hello");
+
+    expect(codexAppServer.resumeThread).toHaveBeenCalledWith("thread-old");
+    expect(codexAppServer.startThread).not.toHaveBeenCalled();
+    expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-old", { prompt: "hello" });
   });
 
   it("appends completion summary to the final streamed reply instead of sending a new message", async () => {

@@ -32,6 +32,7 @@ import path from "node:path";
 import { handleMessage } from "./message.js";
 import { getProject } from "../../db/database.js";
 import { sessionManager } from "../../codex/session-manager.js";
+import { isAudioAttachment } from "../../codex/audio-transcription.js";
 
 describe("handleMessage audio transcription", () => {
   beforeEach(() => {
@@ -43,6 +44,7 @@ describe("handleMessage audio transcription", () => {
       auto_approve: 0,
       codex_model: null,
       reasoning_effort: null,
+      collaboration_mode: null,
       created_at: "now",
     });
   });
@@ -84,11 +86,61 @@ describe("handleMessage audio transcription", () => {
 
     expect(sessionManager.sendMessage).toHaveBeenCalledWith(
       message.channel,
-      expect.stringContaining("[Audio transcripts]\n[Transcribed audio: voice.ogg]\nhello from audio"),
+      expect.objectContaining({
+        prompt: expect.stringContaining("[Audio transcripts]\n[Transcribed audio: voice.ogg]\nhello from audio"),
+      }),
     );
     expect(sessionManager.sendMessage).toHaveBeenCalledWith(
       message.channel,
-      expect.stringContaining("please summarize this"),
+      expect.objectContaining({
+        prompt: expect.stringContaining("please summarize this"),
+      }),
+    );
+  });
+
+  it("sends image-only messages with a default inspection prompt", async () => {
+    vi.mocked(isAudioAttachment).mockReturnValue(false);
+
+    const body = new Uint8Array([1, 2, 3, 4]);
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(body);
+          controller.close();
+        },
+      }),
+    })));
+
+    const message = {
+      author: { bot: false, id: "user-1" },
+      guild: { id: "guild-1" },
+      channelId: "chan-1",
+      content: "",
+      attachments: new Map([
+        [
+          "img1",
+          {
+            name: "image.png",
+            size: 4,
+            url: "https://files.example.test/image.png",
+            contentType: "image/png",
+          },
+        ],
+      ]),
+      channel: { id: "chan-1" },
+      reply: vi.fn(),
+      react: vi.fn(),
+    } as any;
+
+    await handleMessage(message);
+
+    expect(sessionManager.sendMessage).toHaveBeenCalledWith(
+      message.channel,
+      expect.objectContaining({
+        prompt: expect.stringContaining("Inspect the attached image"),
+        imagePaths: expect.arrayContaining([expect.stringContaining(".codex-uploads")]),
+      }),
     );
   });
 });

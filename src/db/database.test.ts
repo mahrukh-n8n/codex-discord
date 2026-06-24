@@ -20,6 +20,7 @@ import {
   getAllProjects,
   setAutoApprove,
   setProjectCodexSettings,
+  setProjectCollaborationMode,
   upsertSession,
   getSession,
   updateSessionStatus,
@@ -43,6 +44,7 @@ describe("database", () => {
       expect(project!.auto_approve).toBe(0);
       expect(project!.codex_model).toBeNull();
       expect(project!.reasoning_effort).toBeNull();
+      expect(project!.collaboration_mode).toBeNull();
     });
 
     it("registerProject with same channelId replaces existing", () => {
@@ -98,6 +100,19 @@ describe("database", () => {
       setProjectCodexSettings("ch1", null, null);
       expect(getProject("ch1")!.codex_model).toBeNull();
       expect(getProject("ch1")!.reasoning_effort).toBeNull();
+    });
+
+    it("setProjectCollaborationMode updates plan/code mode", () => {
+      registerProject("ch1", "/p1", "guild1");
+
+      setProjectCollaborationMode("ch1", "plan");
+      expect(getProject("ch1")!.collaboration_mode).toBe("plan");
+
+      setProjectCollaborationMode("ch1", "code");
+      expect(getProject("ch1")!.collaboration_mode).toBe("code");
+
+      setProjectCollaborationMode("ch1", null);
+      expect(getProject("ch1")!.collaboration_mode).toBeNull();
     });
   });
 

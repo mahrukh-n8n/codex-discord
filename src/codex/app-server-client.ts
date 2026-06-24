@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import path from "node:path";
 import { resolveCodexCommand } from "./command-resolver.js";
 
 export interface CodexTurn {
@@ -53,6 +55,22 @@ export interface CodexRateLimitsResponse {
 export interface CodexThreadStartOptions {
   model?: string | null;
   reasoningEffort?: string | null;
+  collaborationMode?: CodexCollaborationModeName | null;
+}
+
+export interface CodexTurnInput {
+  prompt: string;
+  imagePaths?: string[];
+}
+
+export type CodexCollaborationModeName = "plan" | "code" | "default";
+
+export interface CodexCollaborationMode {
+  mode: CodexCollaborationModeName;
+  settings: {
+    model: string;
+    reasoningEffort?: string | null;
+  };
 }
 
 interface JsonRpcNotification {
@@ -78,6 +96,19 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function shouldUseShell(command: string): boolean {
   return process.platform === "win32" && /\.(cmd|bat)$/i.test(command);
+}
+
+function getImageMimeType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".gif") return "image/gif";
+  if (ext === ".webp") return "image/webp";
+  return "image/png";
+}
+
+function readImageDataUrl(filePath: string): string {
+  const encoded = fs.readFileSync(filePath).toString("base64");
+  return `data:${getImageMimeType(filePath)};base64,${encoded}`;
 }
 
 export class CodexAppServerClient extends EventEmitter {
@@ -266,6 +297,15 @@ export class CodexAppServerClient extends EventEmitter {
 
     if (options.model) params.model = options.model;
     if (options.reasoningEffort) params.reasoningEffort = options.reasoningEffort;
+    if (options.collaborationMode) {
+      params.collaborationMode = {
+        mode: options.collaborationMode,
+        settings: {
+          model: options.model ?? "gpt-5.5",
+          reasoningEffort: options.reasoningEffort ?? undefined,
+        },
+      };
+    }
 
     const result = await this.request<{ thread: CodexThreadSummary }>("thread/start", params);
     return result.thread;
@@ -278,10 +318,18 @@ export class CodexAppServerClient extends EventEmitter {
     return result.thread;
   }
 
-  async startTurn(threadId: string, prompt: string): Promise<{ id: string }> {
+  async startTurn(threadId: string, input: string | CodexTurnInput): Promise<{ id: string }> {
+    const prompt = typeof input === "string" ? input : input.prompt;
+    const imagePaths = typeof input === "string" ? [] : input.imagePaths ?? [];
+    const items: Record<string, unknown>[] = [{ type: "text", text: prompt }];
+
+    for (const imagePath of imagePaths) {
+      items.push({ type: "image", url: readImageDataUrl(imagePath) });
+    }
+
     const result = await this.request<{ turn: { id: string } }>("turn/start", {
       threadId,
-      input: [{ type: "text", text: prompt }],
+      input: items,
     });
     return result.turn;
   }

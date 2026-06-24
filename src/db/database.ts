@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import path from "node:path";
-import type { Project, Session, SessionStatus } from "./types.js";
+import type { CollaborationMode, Project, Session, SessionStatus } from "./types.js";
 
 const DB_PATH = path.join(process.cwd(), "data.db");
 
@@ -19,6 +19,7 @@ export function initDatabase(): void {
       auto_approve INTEGER DEFAULT 0,
       codex_model TEXT,
       reasoning_effort TEXT,
+      collaboration_mode TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -34,6 +35,7 @@ export function initDatabase(): void {
 
   ensureColumn("projects", "codex_model", "TEXT");
   ensureColumn("projects", "reasoning_effort", "TEXT");
+  ensureColumn("projects", "collaboration_mode", "TEXT");
 }
 
 function ensureColumn(table: string, column: string, definition: string): void {
@@ -98,6 +100,13 @@ export function setProjectCodexSettings(
     reasoningEffort === undefined ? current?.reasoning_effort ?? null : reasoningEffort,
     channelId,
   );
+}
+
+export function setProjectCollaborationMode(
+  channelId: string,
+  mode: CollaborationMode | null,
+): void {
+  db.prepare("UPDATE projects SET collaboration_mode = ? WHERE channel_id = ?").run(mode, channelId);
 }
 
 // Session queries

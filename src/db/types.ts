@@ -1,4 +1,5 @@
 export type SessionStatus = "online" | "offline" | "waiting" | "idle";
+export type CollaborationMode = "plan" | "code" | "default";
 
 export interface Project {
   channel_id: string;
@@ -7,6 +8,7 @@ export interface Project {
   auto_approve: number;
   codex_model: string | null;
   reasoning_effort: string | null;
+  collaboration_mode: CollaborationMode | null;
   created_at: string;
 }
 
