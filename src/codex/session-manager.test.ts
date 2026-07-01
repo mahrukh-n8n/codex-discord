@@ -86,6 +86,8 @@ describe("SessionManager streaming output", () => {
       lastError: null,
       agentMessagePhases: new Map(),
       finalAnswerStarted: false,
+      completedPlan: false,
+      collaborationMode: "plan",
     });
 
     now = 2_000;
@@ -231,7 +233,266 @@ describe("SessionManager streaming output", () => {
       expect.objectContaining({ content: expect.stringContaining("Earlier commentary") }),
     );
 
-    clearInterval((manager as any).streamState.get("channel-plan-item").heartbeat);
+    now = 3_000;
+    vi.mocked(codexAppServer.readThread).mockResolvedValue({ path: null } as any);
+    await (manager as any).handleNotification({
+      method: "turn/completed",
+      params: { threadId: "thread-plan-item", turn: { status: "completed" } },
+    });
+
+    const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
+    expect(finalEdit.components[0].components[1].data).toMatchObject({
+      custom_id: "implement-plan:channel-plan-item",
+      label: "Implement Plan",
+    });
+
+    expect((manager as any).streamState.has("channel-plan-item")).toBe(false);
+  });
+
+  it("recovers proposed plan blocks from stored final messages before completing", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-plan-thread-"));
+    const threadPath = path.join(tempDir, "thread.jsonl");
+    fs.writeFileSync(
+      threadPath,
+      [
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            phase: "final_answer",
+            content: [
+              {
+                type: "output_text",
+                text: "<proposed_plan>\n# Stored Plan\n\nImplement the stored plan.\n</proposed_plan>",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "task_complete",
+            last_agent_message: null,
+          },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    const manager = new SessionManager();
+    const firstMessage = createFakeMessage();
+    const channel = {
+      id: "channel-stored-plan",
+      send: vi.fn(),
+    } as any;
+
+    vi.mocked(codexAppServer.readThread).mockResolvedValue({ path: threadPath } as any);
+
+    (manager as any).sessions.set("channel-stored-plan", {
+      channelId: "channel-stored-plan",
+      channel,
+      threadId: "thread-stored-plan",
+      turnId: "turn-stored-plan",
+      dbId: "db-stored-plan",
+    });
+
+    (manager as any).streamState.set("channel-stored-plan", {
+      buffer: "",
+      messages: [firstMessage],
+      lastEditTime: 0,
+      stopRow: createStopButton("channel-stored-plan"),
+      startedAt: 0,
+      lastActivity: "Thinking...",
+      toolUseCount: 0,
+      heartbeat: setInterval(() => {}, 60_000),
+      hasTextOutput: false,
+      lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
+      completedPlan: false,
+      collaborationMode: "plan",
+    });
+
+    now = 5_000;
+    await (manager as any).handleNotification({
+      method: "turn/completed",
+      params: { threadId: "thread-stored-plan", turn: { status: "completed" } },
+    });
+
+    const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
+    expect(finalEdit.content).toContain("# Stored Plan");
+    expect(finalEdit.content).not.toContain("<proposed_plan>");
+    expect(finalEdit.components[0].components[1].data).toMatchObject({
+      custom_id: "implement-plan:channel-stored-plan",
+      label: "Implement Plan",
+    });
+  });
+
+  it("does not recover an older proposed plan after an implementation turn completes", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-implementation-thread-"));
+    const threadPath = path.join(tempDir, "thread.jsonl");
+    fs.writeFileSync(
+      threadPath,
+      `${JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          phase: "final_answer",
+          content: [
+            {
+              type: "output_text",
+              text: "<proposed_plan>\n# Old Plan\n\nDo not paste this after implementation.\n</proposed_plan>",
+            },
+          ],
+        },
+      })}\n`,
+    );
+
+    const manager = new SessionManager();
+    const firstMessage = createFakeMessage();
+    const channel = {
+      id: "channel-code-complete",
+      send: vi.fn(),
+    } as any;
+
+    vi.mocked(codexAppServer.readThread).mockResolvedValue({ path: threadPath } as any);
+
+    (manager as any).sessions.set("channel-code-complete", {
+      channelId: "channel-code-complete",
+      channel,
+      threadId: "thread-code-complete",
+      turnId: "turn-code-complete",
+      dbId: "db-code-complete",
+    });
+
+    (manager as any).streamState.set("channel-code-complete", {
+      buffer: "Implemented the plan and ran tests.",
+      messages: [firstMessage],
+      lastEditTime: 0,
+      stopRow: createStopButton("channel-code-complete"),
+      startedAt: 0,
+      lastActivity: "Thinking...",
+      toolUseCount: 0,
+      heartbeat: setInterval(() => {}, 60_000),
+      hasTextOutput: true,
+      lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: true,
+      completedPlan: false,
+      collaborationMode: "code",
+    });
+
+    now = 6_000;
+    await (manager as any).handleNotification({
+      method: "turn/completed",
+      params: { threadId: "thread-code-complete", turn: { status: "completed" } },
+    });
+
+    const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
+    expect(finalEdit.content).toContain("Implemented the plan and ran tests.");
+    expect(finalEdit.content).not.toContain("# Old Plan");
+    expect(finalEdit.components[0].components).toHaveLength(1);
+  });
+
+  it("uses the current plan-mode final answer instead of an older proposed plan", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-current-final-thread-"));
+    const threadPath = path.join(tempDir, "thread.jsonl");
+    fs.writeFileSync(
+      threadPath,
+      [
+        JSON.stringify({ type: "turn_context", payload: { type: "turn_context", turn_id: "turn-old" } }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            phase: "final_answer",
+            internal_chat_message_metadata_passthrough: { turn_id: "turn-old" },
+            content: [
+              {
+                type: "output_text",
+                text: "<proposed_plan>\n# Older Plan\n\nThis should not be rendered.\n</proposed_plan>",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: "turn-old", last_agent_message: null },
+        }),
+        JSON.stringify({ type: "turn_context", payload: { type: "turn_context", turn_id: "turn-current" } }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            phase: "final_answer",
+            internal_chat_message_metadata_passthrough: { turn_id: "turn-current" },
+            content: [
+              {
+                type: "output_text",
+                text: "Agreed. The plan should use cash/USDT settlement wording.\n\nNext decision: choose exposure source or prefer one source?",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "task_complete",
+            turn_id: "turn-current",
+            last_agent_message: "Agreed. The plan should use cash/USDT settlement wording.\n\nNext decision: choose exposure source or prefer one source?",
+          },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    const manager = new SessionManager();
+    const firstMessage = createFakeMessage();
+    const channel = {
+      id: "channel-current-final",
+      send: vi.fn(),
+    } as any;
+
+    vi.mocked(codexAppServer.readThread).mockResolvedValue({ path: threadPath } as any);
+
+    (manager as any).sessions.set("channel-current-final", {
+      channelId: "channel-current-final",
+      channel,
+      threadId: "thread-current-final",
+      turnId: "turn-current",
+      dbId: "db-current-final",
+    });
+
+    (manager as any).streamState.set("channel-current-final", {
+      buffer: "Intermediate plan-mode commentary",
+      messages: [firstMessage],
+      lastEditTime: 0,
+      stopRow: createStopButton("channel-current-final"),
+      startedAt: 0,
+      lastActivity: "Thinking...",
+      toolUseCount: 0,
+      heartbeat: setInterval(() => {}, 60_000),
+      hasTextOutput: true,
+      lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
+      completedPlan: false,
+      collaborationMode: "plan",
+    });
+
+    now = 7_000;
+    await (manager as any).handleNotification({
+      method: "turn/completed",
+      params: { threadId: "thread-current-final", turn: { status: "completed" } },
+    });
+
+    const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
+    expect(finalEdit.content).toContain("cash/USDT settlement wording");
+    expect(finalEdit.content).toContain("Next decision");
+    expect(finalEdit.content).not.toContain("# Older Plan");
+    expect(finalEdit.components[0].components).toHaveLength(1);
   });
 
   it("keeps earlier chunks and sends only newly needed Discord messages", async () => {

@@ -73,15 +73,26 @@ export function createStopButton(
   );
 }
 
-export function createCompletedButton(): ActionRowBuilder<ButtonBuilder> {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+export function createCompletedButton(channelId?: string, canImplementPlan = false): ActionRowBuilder<ButtonBuilder> {
+  const buttons = [
     new ButtonBuilder()
       .setCustomId("completed")
       .setLabel(L("Completed", "완료됨"))
       .setStyle(ButtonStyle.Secondary)
       .setEmoji("✅")
       .setDisabled(true),
-  );
+  ];
+
+  if (channelId && canImplementPlan) {
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(`implement-plan:${channelId}`)
+        .setLabel(L("Implement Plan", "계획 구현"))
+        .setStyle(ButtonStyle.Success),
+    );
+  }
+
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons);
 }
 
 export function createToolApprovalEmbed(

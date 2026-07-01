@@ -323,4 +323,15 @@ describe("createCompletedButton", () => {
     const row = createCompletedButton();
     expect(row.components[0].data).toHaveProperty("disabled", true);
   });
+
+  it("adds an implement plan button when a completed plan is actionable", () => {
+    const row = createCompletedButton("channel-123", true);
+
+    expect(row.components).toHaveLength(2);
+    expect(row.components[1].data).toMatchObject({
+      custom_id: "implement-plan:channel-123",
+      label: "Implement Plan",
+      style: 3,
+    });
+  });
 });

@@ -61,6 +61,8 @@ type StreamState = {
   lastError: string | null;
   agentMessagePhases: Map<string, string>;
   finalAnswerStarted: boolean;
+  completedPlan: boolean;
+  collaborationMode: string | null;
 };
 
 type ThreadContextSnapshot = {
@@ -303,6 +305,81 @@ function readFileTail(filePath: string, maxBytes = 512 * 1024): string {
   } finally {
     fs.closeSync(fd);
   }
+}
+
+function extractProposedPlanBlock(text: string): string | null {
+  const match = text.match(/<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i);
+  const plan = match?.[1]?.trim();
+  return plan || null;
+}
+
+function getAssistantMessageText(payload: Record<string, unknown>): string | null {
+  if (payload.type !== "message" || payload.role !== "assistant" || !Array.isArray(payload.content)) {
+    return null;
+  }
+
+  const parts = payload.content
+    .map((part) => isObject(part) && typeof part.text === "string" ? part.text : null)
+    .filter((part): part is string => Boolean(part));
+
+  return parts.length > 0 ? parts.join("\n") : null;
+}
+
+function getEntryTurnId(entry: Record<string, unknown>, payload: Record<string, unknown>): string | null {
+  const passthrough = isObject(payload.internal_chat_message_metadata_passthrough)
+    ? payload.internal_chat_message_metadata_passthrough
+    : null;
+  return getString(payload.turn_id) ?? getString(entry.turn_id) ?? getString(passthrough?.turn_id);
+}
+
+async function readCurrentTurnFinalMessage(threadId: string, turnId: string | null): Promise<string | null> {
+  try {
+    const thread = await codexAppServer.readThread(threadId, false);
+    if (!thread.path) return null;
+
+    const lines = readFileTail(thread.path).trimEnd().split("\n").reverse();
+    let inCurrentTurn = false;
+    let fallbackAssistantMessage: string | null = null;
+
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>;
+        const payload = isObject(entry.payload) ? entry.payload : null;
+        if (!payload) continue;
+        const entryTurnId = getEntryTurnId(entry, payload);
+
+        if (!inCurrentTurn) {
+          if (payload.type !== "task_complete") continue;
+          if (turnId && entryTurnId && entryTurnId !== turnId) continue;
+          inCurrentTurn = true;
+
+          if (typeof payload.last_agent_message === "string" && payload.last_agent_message.trim()) {
+            return payload.last_agent_message.trim();
+          }
+          continue;
+        }
+
+        if (payload.type === "turn_context") {
+          if (!turnId || getString(payload.turn_id) === turnId) break;
+        }
+
+        if (turnId && entryTurnId && entryTurnId !== turnId) continue;
+
+        const assistantMessage = getAssistantMessageText(payload);
+        if (assistantMessage && (payload.phase === "final_answer" || fallbackAssistantMessage === null)) {
+          fallbackAssistantMessage = assistantMessage.trim();
+        }
+      } catch {
+        // Continue scanning older lines.
+      }
+    }
+
+    return fallbackAssistantMessage;
+  } catch {
+    // Fall through to no recovered final message.
+  }
+
+  return null;
 }
 
 async function readLatestThreadTokenStats(
@@ -572,6 +649,8 @@ export class SessionManager {
       lastError: null,
       agentMessagePhases: new Map(),
       finalAnswerStarted: false,
+      completedPlan: false,
+      collaborationMode: project.collaboration_mode,
     });
 
     this.sessions.set(channelId, {
@@ -690,6 +769,12 @@ export class SessionManager {
         const phase = itemId ? stream.agentMessagePhases.get(itemId) : undefined;
         if (stream.finalAnswerStarted && phase !== "final_answer") return;
         stream.buffer += params.delta;
+        const proposedPlan = extractProposedPlanBlock(stream.buffer);
+        if (proposedPlan) {
+          stream.finalAnswerStarted = true;
+          stream.completedPlan = true;
+          stream.buffer = proposedPlan;
+        }
         stream.hasTextOutput = true;
         await this.flushStream(channelId);
         return;
@@ -700,6 +785,7 @@ export class SessionManager {
         const item = params.item as Record<string, unknown> | undefined;
         if (item?.type === "Plan" && typeof item.text === "string" && item.text.trim()) {
           stream.finalAnswerStarted = true;
+          stream.completedPlan = true;
           stream.buffer = item.text.trim();
           stream.hasTextOutput = true;
           stream.lastEditTime = 0;
@@ -740,6 +826,20 @@ export class SessionManager {
 
         if (stream) {
           const durationMs = Date.now() - stream.startedAt;
+          const canRecoverStoredPlan = normalizeCollaborationMode(stream.collaborationMode) === "plan";
+          const storedFinalMessage = canRecoverStoredPlan
+            ? await readCurrentTurnFinalMessage(active.threadId, active.turnId)
+            : null;
+          const proposedPlan =
+            extractProposedPlanBlock(stream.buffer) ??
+            (!stream.completedPlan && storedFinalMessage ? extractProposedPlanBlock(storedFinalMessage) : null);
+          if (proposedPlan) {
+            stream.finalAnswerStarted = true;
+            stream.completedPlan = true;
+            stream.buffer = proposedPlan;
+          } else if (storedFinalMessage && !stream.finalAnswerStarted) {
+            stream.buffer = storedFinalMessage;
+          }
           const tokenStats = await readLatestThreadTokenStats(active.threadId);
           const limitStatus = tokenStats.limitStatus ?? stream.limitStatus ?? await fetchFreshLimitStatus();
           const contextStatus = tokenStats.contextStatus ?? stream.contextStatus;
@@ -926,7 +1026,7 @@ export class SessionManager {
           content: chunks[i] || "...",
           components: isLastChunk
             ? final
-              ? [createCompletedButton()]
+              ? [createCompletedButton(channelId, stream.completedPlan)]
               : [stream.stopRow]
             : [],
         };

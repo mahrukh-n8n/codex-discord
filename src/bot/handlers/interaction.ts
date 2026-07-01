@@ -7,7 +7,7 @@ import {
 } from "discord.js";
 import { isAllowedUser } from "../../security/guard.js";
 import { sessionManager } from "../../codex/session-manager.js";
-import { upsertSession, getSession } from "../../db/database.js";
+import { upsertSession, getSession, setProjectCollaborationMode } from "../../db/database.js";
 import { codexAppServer } from "../../codex/app-server-client.js";
 import { deleteStoredThread } from "../../codex/storage.js";
 import { L } from "../../utils/i18n.js";
@@ -74,6 +74,25 @@ export async function handleButtonInteraction(
       content: L("Cancelled.", "취소되었습니다."),
       components: [],
     });
+    return;
+  }
+
+  if (action === "implement-plan") {
+    setProjectCollaborationMode(requestId, "code");
+    await interaction.update({
+      content: L("Implementation started from the approved plan.", "승인된 계획을 기반으로 구현을 시작했습니다."),
+      components: [],
+    });
+
+    if (interaction.channel?.isTextBased()) {
+      await sessionManager.sendMessage(interaction.channel as any, {
+        prompt: [
+          "Switch out of planning and implement the proposed plan from the previous turn.",
+          "Use the plan already present in this Codex thread as the implementation spec.",
+          "Make the code changes, run the relevant checks, and report the result.",
+        ].join("\n"),
+      });
+    }
     return;
   }
 
