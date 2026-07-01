@@ -31,6 +31,43 @@ const BLOCKED_EXTENSIONS = new Set([
 ]);
 const MAX_FILE_SIZE = 25 * 1024 * 1024;
 
+function collectionValues<T>(collection: unknown): T[] {
+  if (!collection || typeof collection !== "object") return [];
+  const values = (collection as { values?: unknown }).values;
+  if (typeof values !== "function") return [];
+  return Array.from(values.call(collection) as Iterable<T>);
+}
+
+function getForwardedSnapshots(message: Message): Message[] {
+  return collectionValues<Message>((message as { messageSnapshots?: unknown }).messageSnapshots);
+}
+
+function buildPromptFromMessage(message: Message): string {
+  const parts: string[] = [];
+  const directContent = message.content.trim();
+  if (directContent) {
+    parts.push(directContent);
+  }
+
+  const forwardedTexts = getForwardedSnapshots(message)
+    .map((snapshot) => snapshot.content?.trim() ?? "")
+    .filter(Boolean);
+
+  if (forwardedTexts.length > 0) {
+    parts.push(`[Forwarded message]\n${forwardedTexts.join("\n\n[Forwarded message]\n")}`);
+  }
+
+  return parts.join("\n\n");
+}
+
+function getAllAttachments(message: Message): Attachment[] {
+  const attachments = collectionValues<Attachment>(message.attachments);
+  for (const snapshot of getForwardedSnapshots(message)) {
+    attachments.push(...collectionValues<Attachment>(snapshot.attachments));
+  }
+  return attachments;
+}
+
 async function downloadAttachment(
   attachment: Attachment,
   projectPath: string,
@@ -103,13 +140,13 @@ export async function handleMessage(message: Message): Promise<void> {
     return;
   }
 
-  let prompt = message.content.trim();
+  let prompt = buildPromptFromMessage(message);
   const imagePaths: string[] = [];
   const filePaths: string[] = [];
   const audioTranscripts: string[] = [];
   const skippedMessages: string[] = [];
 
-  for (const [, attachment] of message.attachments) {
+  for (const attachment of getAllAttachments(message)) {
     const result = await downloadAttachment(attachment, project.project_path);
     if (!result) continue;
     if ("skipped" in result) {

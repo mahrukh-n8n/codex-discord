@@ -37,6 +37,7 @@ import { isAudioAttachment } from "../../codex/audio-transcription.js";
 describe("handleMessage audio transcription", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(isAudioAttachment).mockReturnValue(true);
     vi.mocked(getProject).mockReturnValue({
       channel_id: "chan-1",
       project_path: fs.mkdtempSync(path.join(os.tmpdir(), "discord-audio-")),
@@ -140,6 +141,89 @@ describe("handleMessage audio transcription", () => {
       expect.objectContaining({
         prompt: expect.stringContaining("Inspect the attached image"),
         imagePaths: expect.arrayContaining([expect.stringContaining(".codex-uploads")]),
+      }),
+    );
+  });
+
+  it("sends forwarded snapshot text to Codex when direct message content is empty", async () => {
+    const message = {
+      author: { bot: false, id: "user-1" },
+      guild: { id: "guild-1" },
+      channelId: "chan-1",
+      content: "",
+      attachments: new Map(),
+      messageSnapshots: new Map([
+        [
+          "snapshot-1",
+          {
+            content: "forwarded instructions",
+            attachments: new Map(),
+          },
+        ],
+      ]),
+      channel: { id: "chan-1" },
+      reply: vi.fn(),
+      react: vi.fn(),
+    } as any;
+
+    await handleMessage(message);
+
+    expect(sessionManager.sendMessage).toHaveBeenCalledWith(
+      message.channel,
+      expect.objectContaining({
+        prompt: "[Forwarded message]\nforwarded instructions",
+      }),
+    );
+  });
+
+  it("transcribes forwarded snapshot audio attachments", async () => {
+    const body = new Uint8Array([1, 2, 3, 4]);
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(body);
+          controller.close();
+        },
+      }),
+    })));
+
+    const message = {
+      author: { bot: false, id: "user-1" },
+      guild: { id: "guild-1" },
+      channelId: "chan-1",
+      content: "",
+      attachments: new Map(),
+      messageSnapshots: new Map([
+        [
+          "snapshot-1",
+          {
+            content: "",
+            attachments: new Map([
+              [
+                "a1",
+                {
+                  name: "voice.ogg",
+                  size: 4,
+                  url: "https://files.example.test/voice.ogg",
+                  contentType: "audio/ogg",
+                },
+              ],
+            ]),
+          },
+        ],
+      ]),
+      channel: { id: "chan-1" },
+      reply: vi.fn(),
+      react: vi.fn(),
+    } as any;
+
+    await handleMessage(message);
+
+    expect(sessionManager.sendMessage).toHaveBeenCalledWith(
+      message.channel,
+      expect.objectContaining({
+        prompt: expect.stringContaining("[Audio transcripts]\n[Transcribed audio: voice.ogg]\nhello from audio"),
       }),
     );
   });
