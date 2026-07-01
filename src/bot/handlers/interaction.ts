@@ -306,7 +306,7 @@ export async function handleSelectMenuInteraction(
     });
     const answer = selectedLabels.join(", ");
 
-    const resolved = sessionManager.resolveQuestion(askRequestId, answer);
+    const resolved = sessionManager.resolveQuestion(askRequestId, selectedLabels);
     if (!resolved) {
       await interaction.reply({ content: L("This question has expired.", "이 질문은 만료되었습니다."), ephemeral: true });
       return;

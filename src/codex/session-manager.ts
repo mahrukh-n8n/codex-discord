@@ -36,6 +36,7 @@ interface QuestionPayload {
   header: string;
   question: string;
   options?: Array<{ label: string; description: string }>;
+  multiSelect?: boolean;
 }
 
 type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
@@ -58,6 +59,8 @@ type StreamState = {
   heartbeat: NodeJS.Timeout;
   hasTextOutput: boolean;
   lastError: string | null;
+  agentMessagePhases: Map<string, string>;
+  finalAnswerStarted: boolean;
 };
 
 type ThreadContextSnapshot = {
@@ -354,15 +357,53 @@ function getSchemaQuestions(params: Record<string, unknown>): QuestionPayload[] 
 
   return Object.entries(properties).map(([id, raw]) => {
     const property = isObject(raw) ? raw : {};
-    const enumValues = Array.isArray(property.enum) ? property.enum : [];
+    const arrayItems = property.type === "array" && isObject(property.items) ? property.items : null;
+    const optionSource = arrayItems ?? property;
+    const enumValues = Array.isArray(optionSource.enum) ? optionSource.enum : [];
+    const enumDescriptions = Array.isArray(optionSource.enumDescriptions)
+      ? optionSource.enumDescriptions
+      : Array.isArray(optionSource.enum_descriptions)
+        ? optionSource.enum_descriptions
+        : [];
+    const variants = Array.isArray(optionSource.oneOf)
+      ? optionSource.oneOf
+      : Array.isArray(optionSource.anyOf)
+        ? optionSource.anyOf
+        : [];
+    const options = enumValues
+      .map((value, index) => {
+        const label = getString(value);
+        if (!label) return null;
+        return {
+          label,
+          description: getString(enumDescriptions[index]) ?? "",
+        };
+      })
+      .filter((value): value is { label: string; description: string } => Boolean(value));
+
+    for (const variant of variants) {
+      if (!isObject(variant)) continue;
+      const value = getString(variant.const) ?? getString(variant.title);
+      if (!value) continue;
+      options.push({
+        label: value,
+        description: getString(variant.description) ?? "",
+      });
+    }
+
+    if (property.type === "boolean" && options.length === 0) {
+      options.push(
+        { label: "Yes", description: "" },
+        { label: "No", description: "" },
+      );
+    }
+
     return {
       id,
       header: getString(property.title) ?? id,
       question: getString(property.description) ?? fallbackQuestion,
-      options: enumValues
-        .map((value) => getString(value))
-        .filter((value): value is string => Boolean(value))
-        .map((label) => ({ label, description: "" })),
+      options,
+      multiSelect: Boolean(arrayItems),
     };
   });
 }
@@ -515,6 +556,8 @@ export class SessionManager {
       heartbeat,
       hasTextOutput: false,
       lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
     });
 
     this.sessions.set(channelId, {
@@ -526,7 +569,11 @@ export class SessionManager {
     });
 
     try {
-      await codexAppServer.startTurn(threadId, turnInput);
+      await codexAppServer.startTurn(threadId, turnInput, {
+        model: project.codex_model,
+        reasoningEffort: project.reasoning_effort,
+        collaborationMode: project.collaboration_mode,
+      });
     } catch (error) {
       await channel.send(`❌ ${error instanceof Error ? error.message : "Failed to start Codex turn"}`);
       updateSessionStatus(channelId, "offline");
@@ -590,6 +637,17 @@ export class SessionManager {
           stream.toolUseCount++;
         }
 
+        if (item.type === "agentMessage" && typeof item.id === "string") {
+          const phase = typeof item.phase === "string" ? item.phase : "unknown";
+          stream.agentMessagePhases.set(item.id, phase);
+          if (phase === "final_answer" && !stream.finalAnswerStarted) {
+            stream.finalAnswerStarted = true;
+            stream.buffer = "";
+            stream.hasTextOutput = false;
+            stream.lastEditTime = 0;
+          }
+        }
+
         if (item.type === "commandExecution" && typeof item.command === "string") {
           const command = item.command.length > 80 ? item.command.slice(0, 80) + "…" : item.command;
           stream.lastActivity = `${L("Running command", "명령어 실행 중")} \`${command}\``;
@@ -614,6 +672,9 @@ export class SessionManager {
       }
       case "item/agentMessage/delta": {
         if (!stream || typeof params.delta !== "string") return;
+        const itemId = typeof params.itemId === "string" ? params.itemId : null;
+        const phase = itemId ? stream.agentMessagePhases.get(itemId) : undefined;
+        if (stream.finalAnswerStarted && phase !== "final_answer") return;
         stream.buffer += params.delta;
         stream.hasTextOutput = true;
         await this.flushStream(channelId);
@@ -779,7 +840,7 @@ export class SessionManager {
           header: question.header,
           question: question.question,
           options: question.options ?? [],
-          multiSelect: false,
+          multiSelect: question.multiSelect ?? false,
         },
         String(requestId),
         index,
@@ -849,6 +910,10 @@ export class SessionManager {
         } else {
           stream.messages.push(await active.channel.send(payload));
         }
+      }
+      if (stream.messages.length > chunks.length) {
+        const staleMessages = stream.messages.splice(chunks.length);
+        await Promise.all(staleMessages.map((message) => message.delete().catch(() => {})));
       }
     } catch {
       // ignore
@@ -921,11 +986,11 @@ export class SessionManager {
     return true;
   }
 
-  resolveQuestion(requestId: string, answer: string): boolean {
+  resolveQuestion(requestId: string, answer: string | string[]): boolean {
     const id = Number(requestId);
     const pending = pendingQuestions.get(id);
     if (!pending) return false;
-    pending.resolve({ [pending.questionId]: { answers: [answer] } });
+    pending.resolve({ [pending.questionId]: { answers: Array.isArray(answer) ? answer : [answer] } });
     return true;
   }
 

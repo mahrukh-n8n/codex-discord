@@ -84,6 +84,8 @@ describe("SessionManager streaming output", () => {
       heartbeat: setInterval(() => {}, 60_000),
       hasTextOutput: false,
       lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
     });
 
     now = 2_000;
@@ -104,6 +106,79 @@ describe("SessionManager streaming output", () => {
     expect(channel.send).not.toHaveBeenCalled();
 
     clearInterval((manager as any).streamState.get("channel-1").heartbeat);
+  });
+
+  it("replaces streamed commentary when the final answer starts", async () => {
+    const manager = new SessionManager();
+    const firstMessage = createFakeMessage();
+    const channel = {
+      id: "channel-final-phase",
+      send: vi.fn(),
+    } as any;
+
+    (manager as any).sessions.set("channel-final-phase", {
+      channelId: "channel-final-phase",
+      channel,
+      threadId: "thread-final-phase",
+      turnId: "turn-final-phase",
+      dbId: "db-final-phase",
+    });
+
+    (manager as any).streamState.set("channel-final-phase", {
+      buffer: "",
+      messages: [firstMessage],
+      lastEditTime: 0,
+      stopRow: createStopButton("channel-final-phase"),
+      startedAt: 0,
+      lastActivity: "Thinking...",
+      toolUseCount: 0,
+      heartbeat: setInterval(() => {}, 60_000),
+      hasTextOutput: false,
+      lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
+    });
+
+    await (manager as any).handleNotification({
+      method: "item/started",
+      params: {
+        threadId: "thread-final-phase",
+        item: { type: "agentMessage", id: "commentary-1", phase: "commentary" },
+      },
+    });
+
+    now = 2_000;
+    await (manager as any).handleNotification({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-final-phase", itemId: "commentary-1", delta: "Thinking details" },
+    });
+
+    expect(firstMessage.edit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: "Thinking details" }),
+    );
+
+    await (manager as any).handleNotification({
+      method: "item/started",
+      params: {
+        threadId: "thread-final-phase",
+        item: { type: "agentMessage", id: "final-1", phase: "final_answer" },
+      },
+    });
+
+    now = 4_000;
+    await (manager as any).handleNotification({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-final-phase", itemId: "final-1", delta: "Final answer" },
+    });
+
+    expect(firstMessage.edit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: "Final answer" }),
+    );
+    expect(firstMessage.edit).not.toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: expect.stringContaining("Thinking details") }),
+    );
+
+    clearInterval((manager as any).streamState.get("channel-final-phase").heartbeat);
   });
 
   it("keeps earlier chunks and sends only newly needed Discord messages", async () => {
@@ -138,6 +213,8 @@ describe("SessionManager streaming output", () => {
       heartbeat: setInterval(() => {}, 60_000),
       hasTextOutput: false,
       lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
     });
 
     const firstDelta = "a".repeat(1890);
@@ -200,6 +277,10 @@ describe("SessionManager streaming output", () => {
     expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-model", {
       prompt: "hello",
       imagePaths: ["/project/.codex-uploads/image.png"],
+    }, {
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      collaborationMode: "plan",
     });
   });
 
@@ -256,6 +337,10 @@ describe("SessionManager streaming output", () => {
     expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-new", {
       prompt: "read this image",
       imagePaths: ["/project/.codex-uploads/test.png"],
+    }, {
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      collaborationMode: null,
     });
   });
 
@@ -299,7 +384,11 @@ describe("SessionManager streaming output", () => {
 
     expect(codexAppServer.resumeThread).toHaveBeenCalledWith("thread-old");
     expect(codexAppServer.startThread).not.toHaveBeenCalled();
-    expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-old", { prompt: "hello" });
+    expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-old", { prompt: "hello" }, {
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      collaborationMode: "plan",
+    });
   });
 
   it("appends completion summary to the final streamed reply instead of sending a new message", async () => {
@@ -335,6 +424,8 @@ describe("SessionManager streaming output", () => {
       heartbeat: setInterval(() => {}, 60_000),
       hasTextOutput: true,
       lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
     });
 
     now = 34_700;
@@ -441,6 +532,57 @@ describe("SessionManager streaming output", () => {
       action: "accept",
       answers: { environment: { answers: ["production"] } },
       content: { environment: "production" },
+    });
+  });
+
+  it("responds to MCP array enum elicitation requests with multi-select answers", async () => {
+    const manager = new SessionManager();
+    const channel = {
+      id: "channel-5",
+      send: vi.fn().mockResolvedValue(createFakeMessage()),
+    } as any;
+
+    (manager as any).sessions.set("channel-5", {
+      channelId: "channel-5",
+      channel,
+      threadId: "thread-5",
+      turnId: "turn-5",
+      dbId: "db-5",
+    });
+
+    const request = (manager as any).handleServerRequest({
+      id: 100,
+      method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "thread-5",
+        message: "Select scopes",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            scopes: {
+              title: "Scopes",
+              description: "Which scopes?",
+              type: "array",
+              items: {
+                type: "string",
+                enum: ["read", "write"],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    await vi.waitFor(() => expect(channel.send).toHaveBeenCalledTimes(1));
+    const sent = channel.send.mock.calls[0][0];
+    expect(sent.components[0].components[0].data.custom_id).toBe("ask-select:100");
+    expect(manager.resolveQuestion("100", ["read", "write"])).toBe(true);
+    await request;
+
+    expect(codexAppServer.respond).toHaveBeenCalledWith(100, {
+      action: "accept",
+      answers: { scopes: { answers: ["read", "write"] } },
+      content: { scopes: ["read", "write"] },
     });
   });
 

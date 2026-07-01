@@ -58,6 +58,12 @@ export interface CodexThreadStartOptions {
   collaborationMode?: CodexCollaborationModeName | null;
 }
 
+export interface CodexTurnStartOptions {
+  model?: string | null;
+  reasoningEffort?: string | null;
+  collaborationMode?: CodexCollaborationModeName | null;
+}
+
 export interface CodexTurnInput {
   prompt: string;
   imagePaths?: string[];
@@ -318,7 +324,11 @@ export class CodexAppServerClient extends EventEmitter {
     return result.thread;
   }
 
-  async startTurn(threadId: string, input: string | CodexTurnInput): Promise<{ id: string }> {
+  async startTurn(
+    threadId: string,
+    input: string | CodexTurnInput,
+    options: CodexTurnStartOptions = {},
+  ): Promise<{ id: string }> {
     const prompt = typeof input === "string" ? input : input.prompt;
     const imagePaths = typeof input === "string" ? [] : input.imagePaths ?? [];
     const items: Record<string, unknown>[] = [{ type: "text", text: prompt }];
@@ -327,10 +337,22 @@ export class CodexAppServerClient extends EventEmitter {
       items.push({ type: "image", url: readImageDataUrl(imagePath) });
     }
 
-    const result = await this.request<{ turn: { id: string } }>("turn/start", {
+    const params: Record<string, unknown> = {
       threadId,
       input: items,
-    });
+    };
+
+    if (options.collaborationMode) {
+      params.collaborationMode = {
+        mode: options.collaborationMode,
+        settings: {
+          model: options.model ?? "gpt-5.5",
+          reasoning_effort: options.reasoningEffort ?? undefined,
+        },
+      };
+    }
+
+    const result = await this.request<{ turn: { id: string } }>("turn/start", params);
     return result.turn;
   }
 
