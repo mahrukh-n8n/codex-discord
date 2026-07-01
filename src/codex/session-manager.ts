@@ -676,8 +676,16 @@ export class SessionManager {
 
   private async handleNotification(msg: { method: string; params?: Record<string, unknown> }): Promise<void> {
     const params = msg.params ?? {};
-    const threadId = typeof params.threadId === "string" ? params.threadId : null;
-    const active = threadId ? this.findActiveByThread(threadId) : undefined;
+    const threadId = getString(params.threadId) ?? getString(params.thread_id);
+    const turnId =
+      getString(params.turnId) ??
+      getString(params.turn_id) ??
+      (isObject(params.turn) ? getString(params.turn.id) : null);
+    const active = threadId
+      ? this.findActiveByThread(threadId)
+      : turnId
+        ? this.findActiveByTurn(turnId)
+        : undefined;
     if (!active) {
       const limitStatus = formatLimitStatusFromEvent(params);
       const contextStatus = formatContextStatusFromEvent(params);
@@ -693,6 +701,9 @@ export class SessionManager {
     }
 
     const channelId = active.channelId;
+    if (turnId && !active.turnId) {
+      active.turnId = turnId;
+    }
     const stream = this.streamState.get(channelId);
     if (stream) {
       stream.limitStatus = formatLimitStatusFromEvent(params) ?? stream.limitStatus;
@@ -700,10 +711,12 @@ export class SessionManager {
     }
 
     switch (msg.method) {
-      case "turn/started": {
+      case "turn/started":
+      case "task_started": {
         const turn = params.turn as { id?: string } | undefined;
-        if (turn?.id) {
-          active.turnId = turn.id;
+        const startedTurnId = turn?.id ?? turnId;
+        if (startedTurnId) {
+          active.turnId = startedTurnId;
           updateSessionStatus(channelId, "online");
         }
         return;
@@ -802,9 +815,13 @@ export class SessionManager {
           : error.message;
         return;
       }
-      case "turn/completed": {
+      case "turn/completed":
+      case "task_complete": {
         const turn = params.turn as { status?: string | { type?: string }; error?: { message?: string; additionalDetails?: string | null } | null } | undefined;
         const statusType =
+          msg.method === "task_complete"
+            ? "completed"
+            :
           typeof turn?.status === "string"
             ? turn.status
             : typeof turn?.status === "object" && turn.status
@@ -1049,6 +1066,10 @@ export class SessionManager {
 
   private findActiveByThread(threadId: string): ActiveSession | undefined {
     return [...this.sessions.values()].find((entry) => entry.threadId === threadId);
+  }
+
+  private findActiveByTurn(turnId: string): ActiveSession | undefined {
+    return [...this.sessions.values()].find((entry) => entry.turnId === turnId);
   }
 
   async stopSession(channelId: string): Promise<boolean> {

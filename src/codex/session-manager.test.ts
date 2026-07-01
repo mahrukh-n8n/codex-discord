@@ -249,6 +249,74 @@ describe("SessionManager streaming output", () => {
     expect((manager as any).streamState.has("channel-plan-item")).toBe(false);
   });
 
+  it("renders completed plan items that use snake_case rollout fields", async () => {
+    const manager = new SessionManager();
+    const firstMessage = createFakeMessage();
+    const channel = {
+      id: "channel-snake-plan-item",
+      send: vi.fn(),
+    } as any;
+
+    (manager as any).sessions.set("channel-snake-plan-item", {
+      channelId: "channel-snake-plan-item",
+      channel,
+      threadId: "thread-snake-plan-item",
+      turnId: "turn-snake-plan-item",
+      dbId: "db-snake-plan-item",
+    });
+
+    (manager as any).streamState.set("channel-snake-plan-item", {
+      buffer: "",
+      messages: [firstMessage],
+      lastEditTime: 0,
+      stopRow: createStopButton("channel-snake-plan-item"),
+      startedAt: 0,
+      lastActivity: "Thinking...",
+      toolUseCount: 0,
+      heartbeat: setInterval(() => {}, 60_000),
+      hasTextOutput: false,
+      lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
+      completedPlan: false,
+      collaborationMode: "plan",
+    });
+
+    now = 2_000;
+    await (manager as any).handleNotification({
+      method: "item_completed",
+      params: {
+        thread_id: "thread-snake-plan-item",
+        turn_id: "turn-snake-plan-item",
+        item: {
+          type: "Plan",
+          text: "# Snake Plan\n\nRender this.",
+        },
+      },
+    });
+
+    expect(firstMessage.edit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: "# Snake Plan\n\nRender this." }),
+    );
+
+    now = 3_000;
+    vi.mocked(codexAppServer.readThread).mockResolvedValue({ path: null } as any);
+    await (manager as any).handleNotification({
+      method: "task_complete",
+      params: {
+        turn_id: "turn-snake-plan-item",
+        last_agent_message: null,
+      },
+    });
+
+    const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
+    expect(finalEdit.components[0].components[1].data).toMatchObject({
+      custom_id: "implement-plan:channel-snake-plan-item",
+      label: "Implement Plan",
+    });
+    expect((manager as any).streamState.has("channel-snake-plan-item")).toBe(false);
+  });
+
   it("recovers proposed plan blocks from stored final messages before completing", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-plan-thread-"));
     const threadPath = path.join(tempDir, "thread.jsonl");
