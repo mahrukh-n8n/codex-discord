@@ -13,6 +13,8 @@ vi.mock("../../codex/session-manager.js", () => ({
   sessionManager: {
     hasPendingCustomInput: vi.fn(() => false),
     resolveCustomInput: vi.fn(),
+    hasPendingUserInput: vi.fn(() => false),
+    resolvePendingUserInput: vi.fn(),
     hasQueue: vi.fn(() => false),
     isQueueFull: vi.fn(() => false),
     setPendingQueue: vi.fn(),
@@ -226,5 +228,67 @@ describe("handleMessage audio transcription", () => {
         prompt: expect.stringContaining("[Audio transcripts]\n[Transcribed audio: voice.ogg]\nhello from audio"),
       }),
     );
+  });
+
+  it("uses text messages as answers to pending Codex questions", async () => {
+    vi.mocked(sessionManager.hasPendingUserInput).mockReturnValue(true);
+
+    const message = {
+      author: { bot: false, id: "user-1" },
+      guild: { id: "guild-1" },
+      channelId: "chan-1",
+      content: "buy spot",
+      attachments: new Map(),
+      channel: { id: "chan-1" },
+      reply: vi.fn(),
+      react: vi.fn(),
+    } as any;
+
+    await handleMessage(message);
+
+    expect(sessionManager.resolvePendingUserInput).toHaveBeenCalledWith("chan-1", "buy spot");
+    expect(message.react).toHaveBeenCalledWith("✅");
+    expect(sessionManager.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("uses transcribed voice messages as answers to pending Codex questions", async () => {
+    vi.mocked(sessionManager.hasPendingUserInput).mockReturnValue(true);
+    const body = new Uint8Array([1, 2, 3, 4]);
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(body);
+          controller.close();
+        },
+      }),
+    })));
+
+    const message = {
+      author: { bot: false, id: "user-1" },
+      guild: { id: "guild-1" },
+      channelId: "chan-1",
+      content: "",
+      attachments: new Map([
+        [
+          "a1",
+          {
+            name: "voice.ogg",
+            size: 4,
+            url: "https://files.example.test/voice.ogg",
+            contentType: "audio/ogg",
+          },
+        ],
+      ]),
+      channel: { id: "chan-1" },
+      reply: vi.fn(),
+      react: vi.fn(),
+    } as any;
+
+    await handleMessage(message);
+
+    expect(sessionManager.resolvePendingUserInput).toHaveBeenCalledWith("chan-1", "hello from audio");
+    expect(message.react).toHaveBeenCalledWith("✅");
+    expect(sessionManager.sendMessage).not.toHaveBeenCalled();
   });
 });

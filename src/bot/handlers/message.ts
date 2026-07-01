@@ -131,16 +131,8 @@ export async function handleMessage(message: Message): Promise<void> {
     return;
   }
 
-  if (sessionManager.hasPendingCustomInput(message.channelId)) {
-    const text = message.content.trim();
-    if (text) {
-      sessionManager.resolveCustomInput(message.channelId, text);
-      await message.react("✅");
-    }
-    return;
-  }
-
   let prompt = buildPromptFromMessage(message);
+  const pendingAnswerParts: string[] = prompt ? [prompt] : [];
   const imagePaths: string[] = [];
   const filePaths: string[] = [];
   const audioTranscripts: string[] = [];
@@ -169,6 +161,7 @@ export async function handleMessage(message: Message): Promise<void> {
             transcript,
           ].join("\n"),
         );
+        pendingAnswerParts.push(transcript);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         console.warn(`[audio] Transcription failed for ${attachment.name ?? path.basename(result.filePath)}: ${reason}`);
@@ -186,6 +179,17 @@ export async function handleMessage(message: Message): Promise<void> {
 
   if (skippedMessages.length > 0) {
     await message.reply(skippedMessages.join("\n"));
+  }
+
+  if (sessionManager.hasPendingUserInput(message.channelId)) {
+    const answer = pendingAnswerParts.join("\n\n").trim();
+    if (answer) {
+      sessionManager.resolvePendingUserInput(message.channelId, answer);
+      await message.react("✅");
+    } else if (skippedMessages.length === 0) {
+      await message.reply(L("Please reply with text or a voice note for the pending question.", "대기 중인 질문에는 텍스트나 음성 메시지로 답해주세요."));
+    }
+    return;
   }
 
   if (audioTranscripts.length > 0) {

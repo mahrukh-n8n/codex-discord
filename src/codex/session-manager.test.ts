@@ -181,6 +181,59 @@ describe("SessionManager streaming output", () => {
     clearInterval((manager as any).streamState.get("channel-final-phase").heartbeat);
   });
 
+  it("renders completed plan items as final output", async () => {
+    const manager = new SessionManager();
+    const firstMessage = createFakeMessage();
+    const channel = {
+      id: "channel-plan-item",
+      send: vi.fn(),
+    } as any;
+
+    (manager as any).sessions.set("channel-plan-item", {
+      channelId: "channel-plan-item",
+      channel,
+      threadId: "thread-plan-item",
+      turnId: "turn-plan-item",
+      dbId: "db-plan-item",
+    });
+
+    (manager as any).streamState.set("channel-plan-item", {
+      buffer: "Earlier commentary",
+      messages: [firstMessage],
+      lastEditTime: 0,
+      stopRow: createStopButton("channel-plan-item"),
+      startedAt: 0,
+      lastActivity: "Thinking...",
+      toolUseCount: 0,
+      heartbeat: setInterval(() => {}, 60_000),
+      hasTextOutput: true,
+      lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
+    });
+
+    now = 2_000;
+    await (manager as any).handleNotification({
+      method: "item_completed",
+      params: {
+        threadId: "thread-plan-item",
+        item: {
+          type: "Plan",
+          text: "# Final Plan\n\nBuild the thing.",
+        },
+      },
+    });
+
+    expect(firstMessage.edit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: "# Final Plan\n\nBuild the thing." }),
+    );
+    expect(firstMessage.edit).not.toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: expect.stringContaining("Earlier commentary") }),
+    );
+
+    clearInterval((manager as any).streamState.get("channel-plan-item").heartbeat);
+  });
+
   it("keeps earlier chunks and sends only newly needed Discord messages", async () => {
     const manager = new SessionManager();
     const firstMessage = createFakeMessage();

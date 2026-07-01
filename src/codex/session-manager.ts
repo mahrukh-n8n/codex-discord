@@ -694,6 +694,19 @@ export class SessionManager {
         await this.flushStream(channelId);
         return;
       }
+      case "item/completed":
+      case "item_completed": {
+        if (!stream) return;
+        const item = params.item as Record<string, unknown> | undefined;
+        if (item?.type === "Plan" && typeof item.text === "string" && item.text.trim()) {
+          stream.finalAnswerStarted = true;
+          stream.buffer = item.text.trim();
+          stream.hasTextOutput = true;
+          stream.lastEditTime = 0;
+          await this.flushStream(channelId);
+        }
+        return;
+      }
       case "error": {
         if (!stream) return;
         const error = params.error as { message?: string; additionalDetails?: string | null } | undefined;
@@ -1029,6 +1042,23 @@ export class SessionManager {
 
   hasPendingCustomInput(channelId: string): boolean {
     return pendingCustomInputs.has(channelId);
+  }
+
+  hasPendingUserInput(channelId: string): boolean {
+    if (pendingCustomInputs.has(channelId)) return true;
+    return [...pendingQuestions.values()].some((pending) => pending.channelId === channelId);
+  }
+
+  resolvePendingUserInput(channelId: string, text: string): boolean {
+    if (this.resolveCustomInput(channelId, text)) return true;
+
+    for (const [, pending] of pendingQuestions) {
+      if (pending.channelId !== channelId) continue;
+      pending.resolve({ [pending.questionId]: { answers: [text] } });
+      return true;
+    }
+
+    return false;
   }
 
   setPendingQueue(channelId: string, channel: TextChannel, input: string | CodexTurnInput): void {
