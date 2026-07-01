@@ -56,6 +56,7 @@ export interface CodexThreadStartOptions {
   model?: string | null;
   reasoningEffort?: string | null;
   collaborationMode?: CodexCollaborationModeName | null;
+  autoApprove?: boolean;
 }
 
 export interface CodexTurnStartOptions {
@@ -115,6 +116,29 @@ function getImageMimeType(filePath: string): string {
 function readImageDataUrl(filePath: string): string {
   const encoded = fs.readFileSync(filePath).toString("base64");
   return `data:${getImageMimeType(filePath)};base64,${encoded}`;
+}
+
+export function buildThreadStartParams(cwd: string, options: CodexThreadStartOptions = {}): Record<string, unknown> {
+  const params: Record<string, unknown> = {
+    cwd,
+    approvalPolicy: options.autoApprove ? "never" : "on-request",
+    sandbox: "danger-full-access",
+    modelProvider: "openai",
+  };
+
+  if (options.model) params.model = options.model;
+  if (options.reasoningEffort) params.reasoningEffort = options.reasoningEffort;
+  if (options.collaborationMode) {
+    params.collaborationMode = {
+      mode: options.collaborationMode,
+      settings: {
+        model: options.model ?? "gpt-5.5",
+        reasoningEffort: options.reasoningEffort ?? undefined,
+      },
+    };
+  }
+
+  return params;
 }
 
 export class CodexAppServerClient extends EventEmitter {
@@ -294,25 +318,7 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   async startThread(cwd: string, options: CodexThreadStartOptions = {}): Promise<CodexThreadSummary> {
-    const params: Record<string, unknown> = {
-      cwd,
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
-      modelProvider: "openai",
-    };
-
-    if (options.model) params.model = options.model;
-    if (options.reasoningEffort) params.reasoningEffort = options.reasoningEffort;
-    if (options.collaborationMode) {
-      params.collaborationMode = {
-        mode: options.collaborationMode,
-        settings: {
-          model: options.model ?? "gpt-5.5",
-          reasoningEffort: options.reasoningEffort ?? undefined,
-        },
-      };
-    }
-
+    const params = buildThreadStartParams(cwd, options);
     const result = await this.request<{ thread: CodexThreadSummary }>("thread/start", params);
     return result.thread;
   }

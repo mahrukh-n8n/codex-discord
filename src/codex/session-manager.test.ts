@@ -273,6 +273,7 @@ describe("SessionManager streaming output", () => {
       model: "gpt-5.5",
       reasoningEffort: "high",
       collaborationMode: "plan",
+      autoApprove: false,
     });
     expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-model", {
       prompt: "hello",
@@ -281,6 +282,37 @@ describe("SessionManager streaming output", () => {
       model: "gpt-5.5",
       reasoningEffort: "high",
       collaborationMode: "plan",
+    });
+  });
+
+  it("passes auto-approve setting when starting a new thread", async () => {
+    vi.mocked(getProject).mockReturnValue({
+      channel_id: "channel-auto-approve",
+      project_path: "/project",
+      guild_id: "guild",
+      auto_approve: 1,
+      codex_model: null,
+      reasoning_effort: null,
+      collaboration_mode: null,
+      created_at: "now",
+    });
+    vi.mocked(getSession).mockReturnValue(undefined);
+    vi.mocked(codexAppServer.startThread).mockResolvedValue({ id: "thread-auto" } as any);
+    vi.mocked(codexAppServer.startTurn).mockResolvedValue({ id: "turn-auto" });
+
+    const manager = new SessionManager();
+    const channel = {
+      id: "channel-auto-approve",
+      send: vi.fn().mockResolvedValue(createFakeMessage()),
+    } as any;
+
+    await manager.sendMessage(channel, "hello");
+
+    expect(codexAppServer.startThread).toHaveBeenCalledWith("/project", {
+      model: null,
+      reasoningEffort: null,
+      collaborationMode: null,
+      autoApprove: true,
     });
   });
 
@@ -333,6 +365,7 @@ describe("SessionManager streaming output", () => {
       model: "gpt-5.5",
       reasoningEffort: "high",
       collaborationMode: null,
+      autoApprove: false,
     });
     expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-new", {
       prompt: "read this image",
@@ -341,6 +374,62 @@ describe("SessionManager streaming output", () => {
       model: "gpt-5.5",
       reasoningEffort: "high",
       collaborationMode: null,
+    });
+  });
+
+  it("starts a fresh thread for auto-approve channels saved with restricted sandbox", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-thread-"));
+    const threadPath = path.join(tempDir, "thread.jsonl");
+    fs.writeFileSync(
+      threadPath,
+      `${JSON.stringify({
+        payload: {
+          type: "turn_context",
+          model: "gpt-5.5",
+          reasoning_effort: "medium",
+          approval_policy: "on-request",
+          sandbox_policy: { type: "workspace-write" },
+          collaboration_mode: { mode: "plan" },
+        },
+      })}\n`,
+    );
+
+    vi.mocked(getProject).mockReturnValue({
+      channel_id: "channel-sandbox-rotate",
+      project_path: "/project",
+      guild_id: "guild",
+      auto_approve: 1,
+      codex_model: "gpt-5.5",
+      reasoning_effort: "medium",
+      collaboration_mode: "plan",
+      created_at: "now",
+    });
+    vi.mocked(getSession).mockReturnValue({
+      id: "db-session-sandbox",
+      channel_id: "channel-sandbox-rotate",
+      session_id: "thread-old",
+      status: "idle",
+      last_activity: null,
+      created_at: "now",
+    });
+    vi.mocked(codexAppServer.readThread).mockResolvedValue({ path: threadPath } as any);
+    vi.mocked(codexAppServer.startThread).mockResolvedValue({ id: "thread-new" } as any);
+    vi.mocked(codexAppServer.startTurn).mockResolvedValue({ id: "turn-new" });
+
+    const manager = new SessionManager();
+    const channel = {
+      id: "channel-sandbox-rotate",
+      send: vi.fn().mockResolvedValue(createFakeMessage()),
+    } as any;
+
+    await manager.sendMessage(channel, "hello");
+
+    expect(codexAppServer.resumeThread).not.toHaveBeenCalled();
+    expect(codexAppServer.startThread).toHaveBeenCalledWith("/project", {
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+      collaborationMode: "plan",
+      autoApprove: true,
     });
   });
 

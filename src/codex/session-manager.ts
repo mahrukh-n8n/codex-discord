@@ -67,6 +67,8 @@ type ThreadContextSnapshot = {
   model: string | null;
   reasoning: string | null;
   collaborationMode: string | null;
+  approvalPolicy: string | null;
+  sandboxPolicy: string | null;
 };
 
 const pendingApprovals = new Map<
@@ -163,7 +165,7 @@ async function readLatestThreadContext(threadId: string): Promise<ThreadContextS
   try {
     const thread = await codexAppServer.readThread(threadId, false);
     if (!thread.path) {
-      return { model: null, reasoning: null, collaborationMode: null };
+      return { model: null, reasoning: null, collaborationMode: null, approvalPolicy: null, sandboxPolicy: null };
     }
 
     const lines = readFileTail(thread.path).trimEnd().split("\n").reverse();
@@ -179,6 +181,10 @@ async function readLatestThreadContext(threadId: string): Promise<ThreadContextS
           model: getString(payload.model),
           reasoning: getString(payload.reasoning_effort),
           collaborationMode,
+          approvalPolicy: getString(payload.approval_policy),
+          sandboxPolicy: isObject(payload.sandbox_policy)
+            ? getString(payload.sandbox_policy.type)
+            : getString(payload.sandbox_policy),
         };
       } catch {
         // Continue scanning older lines.
@@ -188,7 +194,7 @@ async function readLatestThreadContext(threadId: string): Promise<ThreadContextS
     // Fall through to empty context.
   }
 
-  return { model: null, reasoning: null, collaborationMode: null };
+  return { model: null, reasoning: null, collaborationMode: null, approvalPolicy: null, sandboxPolicy: null };
 }
 
 async function shouldStartFreshThreadForInput(
@@ -201,6 +207,13 @@ async function shouldStartFreshThreadForInput(
   const desiredModel = project?.codex_model ?? defaultSettings.model;
 
   if (desiredModel && threadContext.model && desiredModel !== threadContext.model) {
+    return true;
+  }
+
+  if (project?.auto_approve && (
+    threadContext.approvalPolicy === "on-request" ||
+    threadContext.sandboxPolicy === "workspace-write"
+  )) {
     return true;
   }
 
@@ -486,6 +499,7 @@ export class SessionManager {
           model: project.codex_model,
           reasoningEffort: project.reasoning_effort,
           collaborationMode: project.collaboration_mode,
+          autoApprove: Boolean(project.auto_approve),
         });
         threadId = thread.id;
         threadModel = typeof (thread as { model?: unknown }).model === "string"
