@@ -359,6 +359,7 @@ async function readCurrentTurnFinalMessage(threadId: string, turnId: string | nu
 
     const lines = readFileTail(thread.path).trimEnd().split("\n").reverse();
     let inCurrentTurn = false;
+    let lastAgentMessage: string | null = null;
     let fallbackAssistantMessage: string | null = null;
 
     for (const line of lines) {
@@ -374,7 +375,7 @@ async function readCurrentTurnFinalMessage(threadId: string, turnId: string | nu
           inCurrentTurn = true;
 
           if (typeof payload.last_agent_message === "string" && payload.last_agent_message.trim()) {
-            return payload.last_agent_message.trim();
+            lastAgentMessage = payload.last_agent_message.trim();
           }
           continue;
         }
@@ -385,7 +386,15 @@ async function readCurrentTurnFinalMessage(threadId: string, turnId: string | nu
 
         if (entryTurnId && entryTurnId !== turnId) continue;
 
+        const item = isObject(payload.item) ? payload.item : null;
+        if (payload.type === "item_completed" && item?.type === "Plan" && typeof item.text === "string" && item.text.trim()) {
+          return `<proposed_plan>\n${item.text.trim()}\n</proposed_plan>`;
+        }
+
         const assistantMessage = getAssistantMessageText(payload);
+        const proposedPlan = assistantMessage ? extractProposedPlanBlock(assistantMessage) : null;
+        if (proposedPlan) return assistantMessage.trim();
+
         if (assistantMessage && (payload.phase === "final_answer" || fallbackAssistantMessage === null)) {
           fallbackAssistantMessage = assistantMessage.trim();
         }
@@ -394,7 +403,7 @@ async function readCurrentTurnFinalMessage(threadId: string, turnId: string | nu
       }
     }
 
-    return fallbackAssistantMessage;
+    return fallbackAssistantMessage ?? lastAgentMessage;
   } catch {
     // Fall through to no recovered final message.
   }
@@ -539,6 +548,7 @@ export class SessionManager {
   private messageQueue = new Map<string, { channel: TextChannel; input: CodexTurnInput }[]>();
   private pendingQueuePrompts = new Map<string, { channel: TextChannel; input: CodexTurnInput }>();
   private streamState = new Map<string, StreamState>();
+  private notificationQueue: Promise<void> = Promise.resolve();
 
   private async ensureInitialized(): Promise<void> {
     if (this.initialized) return;
@@ -546,9 +556,12 @@ export class SessionManager {
     await codexAppServer.ensureStarted();
 
     codexAppServer.on("notification", (msg) => {
-      this.handleNotification(msg as { method: string; params?: Record<string, unknown> }).catch((error) => {
-        console.error("Codex notification error:", error);
-      });
+      this.notificationQueue = this.notificationQueue
+        .catch(() => {})
+        .then(() => this.handleNotification(msg as { method: string; params?: Record<string, unknown> }))
+        .catch((error) => {
+          console.error("Codex notification error:", error);
+        });
     });
 
     codexAppServer.on("serverRequest", (msg) => {

@@ -733,6 +733,115 @@ describe("SessionManager streaming output", () => {
     });
   });
 
+  it("prefers a stored current-turn plan over task_complete last_agent_message", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-plan-last-message-thread-"));
+    const threadPath = path.join(tempDir, "thread.jsonl");
+    fs.writeFileSync(
+      threadPath,
+      [
+        JSON.stringify({ type: "turn_context", payload: { type: "turn_context", turn_id: "turn-plan-last-message" } }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            thread_id: "thread-plan-last-message",
+            turn_id: "turn-plan-last-message",
+            item: {
+              type: "Plan",
+              text: "# Revised Stored Plan\n\nUse daily sync plus manual refresh.",
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "agent_message",
+            phase: "final_answer",
+            message: "Short answer without the revised plan.",
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            phase: "final_answer",
+            content: [
+              {
+                type: "output_text",
+                text: "Short answer without the revised plan.\n\n<proposed_plan>\n# Revised Stored Plan\n\nUse daily sync plus manual refresh.\n</proposed_plan>",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "task_complete",
+            turn_id: "turn-plan-last-message",
+            last_agent_message: "Short answer without the revised plan.",
+          },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    const manager = new SessionManager();
+    const firstMessage = createFakeMessage();
+    const channel = {
+      id: "channel-plan-last-message",
+      send: vi.fn(),
+    } as any;
+
+    vi.mocked(codexAppServer.readThread).mockResolvedValue({ path: threadPath } as any);
+
+    (manager as any).sessions.set("channel-plan-last-message", {
+      channelId: "channel-plan-last-message",
+      channel,
+      threadId: "thread-plan-last-message",
+      turnId: "turn-plan-last-message",
+      dbId: "db-plan-last-message",
+    });
+
+    (manager as any).streamState.set("channel-plan-last-message", {
+      buffer: "",
+      messages: [firstMessage],
+      lastEditTime: 0,
+      stopRow: createStopButton("channel-plan-last-message"),
+      startedAt: 0,
+      model: "gpt-5.5",
+      reasoning: "medium",
+      contextStatus: null,
+      limitStatus: null,
+      lastActivity: "Thinking...",
+      toolUseCount: 0,
+      heartbeat: setInterval(() => {}, 60_000),
+      hasTextOutput: false,
+      lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
+      completedPlan: false,
+      collaborationMode: "plan",
+    });
+
+    now = 5_000;
+    await (manager as any).handleNotification({
+      method: "task_complete",
+      params: {
+        turn_id: "turn-plan-last-message",
+        last_agent_message: "Short answer without the revised plan.",
+      },
+    });
+
+    const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
+    expect(finalEdit.content).toContain("# Revised Stored Plan");
+    expect(finalEdit.content).not.toContain("<proposed_plan>");
+    expect(finalEdit.content).not.toContain("Short answer without the revised plan.");
+    expect(finalEdit.components[0].components[1].data).toMatchObject({
+      custom_id: "implement-plan:channel-plan-last-message",
+      label: "Implement Plan",
+    });
+  });
+
   it("does not recover stale stored output when completion has no current turn id", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-stale-final-thread-"));
     const threadPath = path.join(tempDir, "thread.jsonl");
