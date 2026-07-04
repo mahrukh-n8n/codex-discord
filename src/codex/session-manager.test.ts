@@ -317,6 +317,342 @@ describe("SessionManager streaming output", () => {
     expect((manager as any).streamState.has("channel-snake-plan-item")).toBe(false);
   });
 
+  it("renders completed plan items delivered inside event_msg payloads", async () => {
+    const manager = new SessionManager();
+    const firstMessage = createFakeMessage();
+    const channel = {
+      id: "channel-nested-plan-item",
+      send: vi.fn(),
+    } as any;
+
+    (manager as any).sessions.set("channel-nested-plan-item", {
+      channelId: "channel-nested-plan-item",
+      channel,
+      threadId: "thread-nested-plan-item",
+      turnId: null,
+      dbId: "db-nested-plan-item",
+    });
+
+    (manager as any).streamState.set("channel-nested-plan-item", {
+      buffer: "",
+      messages: [firstMessage],
+      lastEditTime: 0,
+      stopRow: createStopButton("channel-nested-plan-item"),
+      startedAt: 0,
+      model: "gpt-5.5",
+      reasoning: "medium",
+      contextStatus: null,
+      limitStatus: null,
+      lastActivity: "Thinking...",
+      toolUseCount: 0,
+      heartbeat: setInterval(() => {}, 60_000),
+      hasTextOutput: false,
+      lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
+      completedPlan: false,
+      collaborationMode: "plan",
+    });
+
+    now = 2_000;
+    await (manager as any).handleNotification({
+      method: "event_msg",
+      params: {
+        payload: {
+          type: "item_completed",
+          thread_id: "thread-nested-plan-item",
+          turn_id: "turn-nested-plan-item",
+          item: {
+            type: "Plan",
+            text: "# Nested Plan\n\nRender this nested event.",
+          },
+        },
+      },
+    });
+
+    expect(firstMessage.edit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: "# Nested Plan\n\nRender this nested event." }),
+    );
+    expect((manager as any).sessions.get("channel-nested-plan-item").turnId).toBe("turn-nested-plan-item");
+
+    clearInterval((manager as any).streamState.get("channel-nested-plan-item").heartbeat);
+  });
+
+  it("keeps a completed plan when later final messages only contain summary text", async () => {
+    const manager = new SessionManager();
+    const firstMessage = createFakeMessage();
+    const channel = {
+      id: "channel-plan-final-collision",
+      send: vi.fn(),
+    } as any;
+
+    (manager as any).sessions.set("channel-plan-final-collision", {
+      channelId: "channel-plan-final-collision",
+      channel,
+      threadId: "thread-plan-final-collision",
+      turnId: null,
+      dbId: "db-plan-final-collision",
+    });
+
+    (manager as any).streamState.set("channel-plan-final-collision", {
+      buffer: "",
+      messages: [firstMessage],
+      lastEditTime: 0,
+      stopRow: createStopButton("channel-plan-final-collision"),
+      startedAt: 0,
+      model: "gpt-5.5",
+      reasoning: "medium",
+      contextStatus: null,
+      limitStatus: null,
+      lastActivity: "Thinking...",
+      toolUseCount: 0,
+      heartbeat: setInterval(() => {}, 60_000),
+      hasTextOutput: false,
+      lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
+      completedPlan: false,
+      collaborationMode: "plan",
+    });
+
+    now = 2_000;
+    await (manager as any).handleNotification({
+      method: "event_msg",
+      params: {
+        payload: {
+          type: "item_completed",
+          thread_id: "thread-plan-final-collision",
+          turn_id: "turn-plan-final-collision",
+          item: {
+            type: "Plan",
+            text: "# Captured Plan\n\nImplement the captured plan.",
+          },
+        },
+      },
+    });
+
+    await (manager as any).handleNotification({
+      method: "event_msg",
+      params: {
+        payload: {
+          type: "agent_message",
+          thread_id: "thread-plan-final-collision",
+          turn_id: "turn-plan-final-collision",
+          phase: "final_answer",
+          message: "Short final answer without the plan.",
+        },
+      },
+    });
+
+    expect(firstMessage.edit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: "# Captured Plan\n\nImplement the captured plan." }),
+    );
+
+    now = 3_000;
+    vi.mocked(codexAppServer.readThread).mockResolvedValue({ path: null } as any);
+    await (manager as any).handleNotification({
+      method: "event_msg",
+      params: {
+        payload: {
+          type: "task_complete",
+          turn_id: "turn-plan-final-collision",
+          last_agent_message: "Short final answer without the plan.",
+        },
+      },
+    });
+
+    const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
+    expect(finalEdit.content).toContain("# Captured Plan");
+    expect(finalEdit.content).not.toContain("Short final answer without the plan");
+    expect(finalEdit.components[0].components[1].data).toMatchObject({
+      custom_id: "implement-plan:channel-plan-final-collision",
+      label: "Implement Plan",
+    });
+    expect((manager as any).streamState.has("channel-plan-final-collision")).toBe(false);
+  });
+
+  it("renders the real 08:29 plan sequence when only task_complete has a final turn id", async () => {
+    const manager = new SessionManager();
+    const firstMessage = createFakeMessage();
+    const channel = {
+      id: "channel-real-plan-sequence",
+      send: vi.fn(),
+    } as any;
+
+    (manager as any).sessions.set("channel-real-plan-sequence", {
+      channelId: "channel-real-plan-sequence",
+      channel,
+      threadId: "thread-real-plan-sequence",
+      turnId: null,
+      dbId: "db-real-plan-sequence",
+    });
+
+    (manager as any).streamState.set("channel-real-plan-sequence", {
+      buffer: "",
+      messages: [firstMessage],
+      lastEditTime: 0,
+      stopRow: createStopButton("channel-real-plan-sequence"),
+      startedAt: 0,
+      model: "gpt-5.5",
+      reasoning: "xhigh",
+      contextStatus: null,
+      limitStatus: null,
+      lastActivity: "Thinking...",
+      toolUseCount: 0,
+      heartbeat: setInterval(() => {}, 60_000),
+      hasTextOutput: false,
+      lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
+      completedPlan: false,
+      collaborationMode: "plan",
+    });
+
+    now = 2_000;
+    await (manager as any).handleNotification({
+      method: "event_msg",
+      params: {
+        payload: {
+          type: "item_completed",
+          thread_id: "thread-real-plan-sequence",
+          turn_id: "turn-real-plan-sequence",
+          item: {
+            type: "Plan",
+            text: "# Monday Amazon PPC Weekly Refresh\n\nRefresh the prior week as a date range.",
+          },
+        },
+      },
+    });
+
+    await (manager as any).handleNotification({
+      method: "event_msg",
+      params: {
+        payload: {
+          type: "agent_message",
+          phase: "final_answer",
+          message: "Yes, this is beneficial.",
+        },
+      },
+    });
+
+    await (manager as any).handleNotification({
+      method: "response_item",
+      params: {
+        payload: {
+          type: "message",
+          role: "assistant",
+          phase: "final_answer",
+          content: [
+            {
+              type: "output_text",
+              text: "Yes, this is beneficial.\n\n<proposed_plan>\n# Monday Amazon PPC Weekly Refresh\n\nRefresh the prior week as a date range.\n</proposed_plan>",
+            },
+          ],
+        },
+      },
+    });
+
+    now = 3_000;
+    vi.mocked(codexAppServer.readThread).mockResolvedValue({ path: null } as any);
+    await (manager as any).handleNotification({
+      method: "event_msg",
+      params: {
+        payload: {
+          type: "task_complete",
+          turn_id: "turn-real-plan-sequence",
+          last_agent_message: "Yes, this is beneficial.",
+        },
+      },
+    });
+
+    const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
+    expect(finalEdit.content).toContain("# Monday Amazon PPC Weekly Refresh");
+    expect(finalEdit.content).not.toContain("<proposed_plan>");
+    expect(finalEdit.components[0].components[1].data).toMatchObject({
+      custom_id: "implement-plan:channel-real-plan-sequence",
+      label: "Implement Plan",
+    });
+    expect((manager as any).streamState.has("channel-real-plan-sequence")).toBe(false);
+  });
+
+  it("ignores commentary response_item messages and renders final proposed plans", async () => {
+    const manager = new SessionManager();
+    const firstMessage = createFakeMessage();
+    const channel = {
+      id: "channel-response-item-plan",
+      send: vi.fn(),
+    } as any;
+
+    (manager as any).sessions.set("channel-response-item-plan", {
+      channelId: "channel-response-item-plan",
+      channel,
+      threadId: "thread-response-item-plan",
+      turnId: "turn-response-item-plan",
+      dbId: "db-response-item-plan",
+    });
+
+    (manager as any).streamState.set("channel-response-item-plan", {
+      buffer: "",
+      messages: [firstMessage],
+      lastEditTime: 0,
+      stopRow: createStopButton("channel-response-item-plan"),
+      startedAt: 0,
+      model: "gpt-5.5",
+      reasoning: "medium",
+      contextStatus: null,
+      limitStatus: null,
+      lastActivity: "Thinking...",
+      toolUseCount: 0,
+      heartbeat: setInterval(() => {}, 60_000),
+      hasTextOutput: false,
+      lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
+      completedPlan: false,
+      collaborationMode: "plan",
+    });
+
+    await (manager as any).handleNotification({
+      method: "response_item",
+      params: {
+        payload: {
+          type: "message",
+          role: "assistant",
+          phase: "commentary",
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-response-item-plan" },
+          content: [{ type: "output_text", text: "Intermediate commentary" }],
+        },
+      },
+    });
+
+    expect(firstMessage.edit).not.toHaveBeenCalled();
+
+    now = 2_000;
+    await (manager as any).handleNotification({
+      method: "response_item",
+      params: {
+        payload: {
+          type: "message",
+          role: "assistant",
+          phase: "final_answer",
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-response-item-plan" },
+          content: [
+            {
+              type: "output_text",
+              text: "<proposed_plan>\n# Response Item Plan\n\nRender final plan.\n</proposed_plan>",
+            },
+          ],
+        },
+      },
+    });
+
+    expect(firstMessage.edit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content: "# Response Item Plan\n\nRender final plan." }),
+    );
+
+    clearInterval((manager as any).streamState.get("channel-response-item-plan").heartbeat);
+  });
+
   it("recovers proposed plan blocks from stored final messages before completing", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-plan-thread-"));
     const threadPath = path.join(tempDir, "thread.jsonl");
@@ -341,6 +677,7 @@ describe("SessionManager streaming output", () => {
           type: "event_msg",
           payload: {
             type: "task_complete",
+            turn_id: "turn-stored-plan",
             last_agent_message: null,
           },
         }),
@@ -394,6 +731,88 @@ describe("SessionManager streaming output", () => {
       custom_id: "implement-plan:channel-stored-plan",
       label: "Implement Plan",
     });
+  });
+
+  it("does not recover stale stored output when completion has no current turn id", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-stale-final-thread-"));
+    const threadPath = path.join(tempDir, "thread.jsonl");
+    fs.writeFileSync(
+      threadPath,
+      [
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            phase: "final_answer",
+            internal_chat_message_metadata_passthrough: { turn_id: "turn-old" },
+            content: [
+              {
+                type: "output_text",
+                text: "Old final answer that must not be reused.",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "task_complete",
+            turn_id: "turn-old",
+            last_agent_message: "Old final answer that must not be reused.",
+          },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    const manager = new SessionManager();
+    const firstMessage = createFakeMessage();
+    const channel = {
+      id: "channel-stale-final",
+      send: vi.fn(),
+    } as any;
+
+    vi.mocked(codexAppServer.readThread).mockResolvedValue({ path: threadPath } as any);
+
+    (manager as any).sessions.set("channel-stale-final", {
+      channelId: "channel-stale-final",
+      channel,
+      threadId: "thread-stale-final",
+      turnId: null,
+      dbId: "db-stale-final",
+    });
+
+    (manager as any).streamState.set("channel-stale-final", {
+      buffer: "",
+      messages: [firstMessage],
+      lastEditTime: 0,
+      stopRow: createStopButton("channel-stale-final"),
+      startedAt: 0,
+      model: "gpt-5.5",
+      reasoning: "medium",
+      contextStatus: null,
+      limitStatus: null,
+      lastActivity: "Thinking...",
+      toolUseCount: 0,
+      heartbeat: setInterval(() => {}, 60_000),
+      hasTextOutput: false,
+      lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: false,
+      completedPlan: false,
+      collaborationMode: "plan",
+    });
+
+    now = 7_000;
+    await (manager as any).handleNotification({
+      method: "turn/completed",
+      params: { threadId: "thread-stale-final", turn: { status: "completed" } },
+    });
+
+    const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
+    expect(finalEdit.content).toContain("Task completed");
+    expect(finalEdit.content).not.toContain("Old final answer");
+    expect(finalEdit.components[0].components).toHaveLength(1);
   });
 
   it("does not recover an older proposed plan after an implementation turn completes", async () => {
@@ -665,6 +1084,7 @@ describe("SessionManager streaming output", () => {
       reasoningEffort: "high",
       collaborationMode: "plan",
     });
+    expect((manager as any).sessions.get("channel-model").turnId).toBe("turn-model");
   });
 
   it("passes auto-approve setting when starting a new thread", async () => {

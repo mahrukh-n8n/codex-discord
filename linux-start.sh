@@ -122,7 +122,7 @@ Environment=NODE_PATH=$(dirname "$NODE_BIN")
 ExecStartPre=/bin/bash -c 'touch $SCRIPT_DIR/.bot.lock'
 ExecStart=$NODE_BIN $SCRIPT_DIR/dist/index.js
 ExecStopPost=/bin/bash -c 'rm -f $SCRIPT_DIR/.bot.lock'
-Restart=on-failure
+Restart=always
 RestartSec=10
 StandardOutput=append:$SCRIPT_DIR/bot.log
 StandardError=append:$SCRIPT_DIR/bot-error.log
@@ -223,7 +223,7 @@ Environment=NODE_PATH=$(dirname "$NODE_BIN")
 ExecStartPre=/bin/bash -c 'touch $SCRIPT_DIR/.bot.lock'
 ExecStart=$NODE_BIN $SCRIPT_DIR/dist/index.js
 ExecStopPost=/bin/bash -c 'rm -f $SCRIPT_DIR/.bot.lock'
-Restart=on-failure
+Restart=always
 RestartSec=10
 StandardOutput=append:$SCRIPT_DIR/bot.log
 StandardError=append:$SCRIPT_DIR/bot-error.log

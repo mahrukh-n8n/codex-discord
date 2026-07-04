@@ -18,6 +18,19 @@ interface SessionInfo {
   source: string;
 }
 
+const DISCORD_SELECT_TEXT_LIMIT = 100;
+
+export function formatSelectText(value: string, maxLength = DISCORD_SELECT_TEXT_LIMIT): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd() + "…";
+}
+
+function formatSessionSource(source: string): string {
+  if (source.startsWith("{")) return "agent";
+  return source || "codex";
+}
+
 export function findSessionDir(projectPath: string): string | null {
   const first = listStoredThreads(projectPath)[0];
   return first?.rollout_path ? path.dirname(first.rollout_path) : null;
@@ -121,11 +134,11 @@ export async function execute(
   ];
 
   for (const session of sessions.slice(0, 24)) {
-    const preview = session.preview.length > 70 ? session.preview.slice(0, 70) + "…" : session.preview;
+    const preview = formatSelectText(session.preview || "(empty session)", 90);
     const date = new Date(session.timestamp).toLocaleString();
     options.push({
       label: preview || "(empty session)",
-      description: `${session.source} • ${date}`,
+      description: formatSelectText(`${formatSessionSource(session.source)} • ${date}`),
       value: session.sessionId,
       ...(activeSessionId === session.sessionId ? { default: true } : {}),
     });

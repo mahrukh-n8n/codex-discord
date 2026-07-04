@@ -332,7 +332,27 @@ function getEntryTurnId(entry: Record<string, unknown>, payload: Record<string, 
   return getString(payload.turn_id) ?? getString(entry.turn_id) ?? getString(passthrough?.turn_id);
 }
 
+function normalizeNotification(msg: {
+  method: string;
+  params?: Record<string, unknown>;
+}): { method: string; params: Record<string, unknown> } {
+  const rawParams = msg.params ?? {};
+  const payload = isObject(rawParams.payload) ? rawParams.payload : null;
+  const payloadType = payload ? getString(payload.type) : null;
+
+  if (payload && payloadType && (msg.method === "event_msg" || msg.method === "response_item" || msg.method === "event")) {
+    return {
+      method: payloadType,
+      params: { ...rawParams, ...payload },
+    };
+  }
+
+  return { method: msg.method, params: rawParams };
+}
+
 async function readCurrentTurnFinalMessage(threadId: string, turnId: string | null): Promise<string | null> {
+  if (!turnId) return null;
+
   try {
     const thread = await codexAppServer.readThread(threadId, false);
     if (!thread.path) return null;
@@ -350,7 +370,7 @@ async function readCurrentTurnFinalMessage(threadId: string, turnId: string | nu
 
         if (!inCurrentTurn) {
           if (payload.type !== "task_complete") continue;
-          if (turnId && entryTurnId && entryTurnId !== turnId) continue;
+          if (entryTurnId !== turnId) continue;
           inCurrentTurn = true;
 
           if (typeof payload.last_agent_message === "string" && payload.last_agent_message.trim()) {
@@ -363,7 +383,7 @@ async function readCurrentTurnFinalMessage(threadId: string, turnId: string | nu
           if (!turnId || getString(payload.turn_id) === turnId) break;
         }
 
-        if (turnId && entryTurnId && entryTurnId !== turnId) continue;
+        if (entryTurnId && entryTurnId !== turnId) continue;
 
         const assistantMessage = getAssistantMessageText(payload);
         if (assistantMessage && (payload.phase === "final_answer" || fallbackAssistantMessage === null)) {
@@ -662,11 +682,15 @@ export class SessionManager {
     });
 
     try {
-      await codexAppServer.startTurn(threadId, turnInput, {
+      const turn = await codexAppServer.startTurn(threadId, turnInput, {
         model: project.codex_model,
         reasoningEffort: project.reasoning_effort,
         collaborationMode: project.collaboration_mode,
       });
+      const active = this.sessions.get(channelId);
+      if (active && !active.turnId && typeof turn.id === "string") {
+        active.turnId = turn.id;
+      }
     } catch (error) {
       await channel.send(`❌ ${error instanceof Error ? error.message : "Failed to start Codex turn"}`);
       updateSessionStatus(channelId, "offline");
@@ -675,11 +699,15 @@ export class SessionManager {
   }
 
   private async handleNotification(msg: { method: string; params?: Record<string, unknown> }): Promise<void> {
-    const params = msg.params ?? {};
+    const { method, params } = normalizeNotification(msg);
+    const passthrough = isObject(params.internal_chat_message_metadata_passthrough)
+      ? params.internal_chat_message_metadata_passthrough
+      : null;
     const threadId = getString(params.threadId) ?? getString(params.thread_id);
     const turnId =
       getString(params.turnId) ??
       getString(params.turn_id) ??
+      getString(passthrough?.turn_id) ??
       (isObject(params.turn) ? getString(params.turn.id) : null);
     const active = threadId
       ? this.findActiveByThread(threadId)
@@ -710,7 +738,7 @@ export class SessionManager {
       stream.contextStatus = formatContextStatusFromEvent(params) ?? stream.contextStatus;
     }
 
-    switch (msg.method) {
+    switch (method) {
       case "turn/started":
       case "task_started": {
         const turn = params.turn as { id?: string } | undefined;
@@ -792,6 +820,36 @@ export class SessionManager {
         await this.flushStream(channelId);
         return;
       }
+      case "agent_message": {
+        if (!stream || typeof params.message !== "string" || !params.message.trim()) return;
+        const phase = getString(params.phase);
+        if (phase && phase !== "final_answer") return;
+        const proposedPlan = extractProposedPlanBlock(params.message);
+        if (!proposedPlan && stream.completedPlan) return;
+        stream.finalAnswerStarted = true;
+        stream.completedPlan = Boolean(proposedPlan);
+        stream.buffer = proposedPlan ?? params.message.trim();
+        stream.hasTextOutput = true;
+        stream.lastEditTime = 0;
+        await this.flushStream(channelId);
+        return;
+      }
+      case "message": {
+        if (!stream) return;
+        const assistantMessage = getAssistantMessageText(params);
+        if (!assistantMessage) return;
+        const phase = getString(params.phase);
+        if (phase && phase !== "final_answer") return;
+        const proposedPlan = extractProposedPlanBlock(assistantMessage);
+        if (!proposedPlan && stream.completedPlan) return;
+        stream.finalAnswerStarted = true;
+        stream.completedPlan = Boolean(proposedPlan);
+        stream.buffer = proposedPlan ?? assistantMessage.trim();
+        stream.hasTextOutput = true;
+        stream.lastEditTime = 0;
+        await this.flushStream(channelId);
+        return;
+      }
       case "item/completed":
       case "item_completed": {
         if (!stream) return;
@@ -819,7 +877,7 @@ export class SessionManager {
       case "task_complete": {
         const turn = params.turn as { status?: string | { type?: string }; error?: { message?: string; additionalDetails?: string | null } | null } | undefined;
         const statusType =
-          msg.method === "task_complete"
+          method === "task_complete"
             ? "completed"
             :
           typeof turn?.status === "string"
@@ -843,7 +901,7 @@ export class SessionManager {
 
         if (stream) {
           const durationMs = Date.now() - stream.startedAt;
-          const canRecoverStoredPlan = normalizeCollaborationMode(stream.collaborationMode) === "plan";
+          const canRecoverStoredPlan = normalizeCollaborationMode(stream.collaborationMode) === "plan" && Boolean(active.turnId);
           const storedFinalMessage = canRecoverStoredPlan
             ? await readCurrentTurnFinalMessage(active.threadId, active.turnId)
             : null;

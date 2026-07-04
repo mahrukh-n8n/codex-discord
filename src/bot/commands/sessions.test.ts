@@ -10,6 +10,7 @@ vi.mock("../../codex/storage.js", () => ({
 import { listStoredThreads } from "../../codex/storage.js";
 import {
   findSessionDir,
+  formatSelectText,
   getLastAssistantMessage,
   getLastAssistantMessageFull,
   listSessions,
@@ -68,6 +69,14 @@ describe("sessions helpers", () => {
 
     const result = await getLastAssistantMessage(filePath);
     expect(result).toBe("Tail");
+  });
+
+  it("formatSelectText normalizes whitespace and caps Discord select text length", () => {
+    const result = formatSelectText(`Line 1\n${"a".repeat(120)}`);
+
+    expect(result).toHaveLength(100);
+    expect(result).not.toContain("\n");
+    expect(result.endsWith("…")).toBe(true);
   });
 
   it("listSessions maps stored threads into session summaries", async () => {
