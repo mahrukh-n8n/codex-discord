@@ -834,12 +834,118 @@ describe("SessionManager streaming output", () => {
 
     const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
     expect(finalEdit.content).toContain("# Revised Stored Plan");
+    expect(finalEdit.content).toContain("Short answer without the revised plan.");
     expect(finalEdit.content).not.toContain("<proposed_plan>");
-    expect(finalEdit.content).not.toContain("Short answer without the revised plan.");
     expect(finalEdit.components[0].components[1].data).toMatchObject({
       custom_id: "implement-plan:channel-plan-last-message",
       label: "Implement Plan",
     });
+  });
+
+  it("does not cross a top-level turn_context to recover a previous turn plan", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-turn-boundary-thread-"));
+    const threadPath = path.join(tempDir, "thread.jsonl");
+    fs.writeFileSync(
+      threadPath,
+      [
+        JSON.stringify({ type: "turn_context", payload: { turn_id: "turn-old" } }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "item_completed",
+            thread_id: "thread-turn-boundary",
+            turn_id: "turn-old",
+            item: {
+              type: "Plan",
+              text: "# Previous Plan\n\nDo not recover this.",
+            },
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "task_complete",
+            turn_id: "turn-old",
+            last_agent_message: null,
+          },
+        }),
+        JSON.stringify({ type: "turn_context", payload: { turn_id: "turn-current" } }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            phase: "final_answer",
+            content: [
+              {
+                type: "output_text",
+                text: "Current answer only. No revised plan.",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "task_complete",
+            turn_id: "turn-current",
+            last_agent_message: "Current answer only. No revised plan.",
+          },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    const manager = new SessionManager();
+    const firstMessage = createFakeMessage();
+    const channel = {
+      id: "channel-turn-boundary",
+      send: vi.fn(),
+    } as any;
+
+    vi.mocked(codexAppServer.readThread).mockResolvedValue({ path: threadPath } as any);
+
+    (manager as any).sessions.set("channel-turn-boundary", {
+      channelId: "channel-turn-boundary",
+      channel,
+      threadId: "thread-turn-boundary",
+      turnId: "turn-current",
+      dbId: "db-turn-boundary",
+    });
+
+    (manager as any).streamState.set("channel-turn-boundary", {
+      buffer: "Current answer only. No revised plan.",
+      messages: [firstMessage],
+      lastEditTime: 0,
+      stopRow: createStopButton("channel-turn-boundary"),
+      startedAt: 0,
+      model: "gpt-5.5",
+      reasoning: "medium",
+      contextStatus: null,
+      limitStatus: null,
+      lastActivity: "Thinking...",
+      toolUseCount: 0,
+      heartbeat: setInterval(() => {}, 60_000),
+      hasTextOutput: true,
+      lastError: null,
+      agentMessagePhases: new Map(),
+      finalAnswerStarted: true,
+      completedPlan: false,
+      collaborationMode: "plan",
+    });
+
+    now = 5_000;
+    await (manager as any).handleNotification({
+      method: "task_complete",
+      params: {
+        turn_id: "turn-current",
+        last_agent_message: "Current answer only. No revised plan.",
+      },
+    });
+
+    const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
+    expect(finalEdit.content).toContain("Current answer only");
+    expect(finalEdit.content).not.toContain("# Previous Plan");
+    expect(finalEdit.components[0].components).toHaveLength(1);
   });
 
   it("does not recover stale stored output when completion has no current turn id", async () => {

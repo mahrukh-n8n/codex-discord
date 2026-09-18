@@ -307,10 +307,17 @@ function readFileTail(filePath: string, maxBytes = 512 * 1024): string {
   }
 }
 
-function extractProposedPlanBlock(text: string): string | null {
+function formatMessageWithProposedPlan(text: string): { display: string; plan: string } | null {
   const match = text.match(/<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i);
   const plan = match?.[1]?.trim();
-  return plan || null;
+  if (!plan) return null;
+
+  const before = text.slice(0, match.index).trim();
+  const after = text.slice((match.index ?? 0) + match[0].length).trim();
+  return {
+    plan,
+    display: [before, plan, after].filter(Boolean).join("\n\n"),
+  };
 }
 
 function getAssistantMessageText(payload: Record<string, unknown>): string | null {
@@ -380,8 +387,8 @@ async function readCurrentTurnFinalMessage(threadId: string, turnId: string | nu
           continue;
         }
 
-        if (payload.type === "turn_context") {
-          if (!turnId || getString(payload.turn_id) === turnId) break;
+        if (entry.type === "turn_context" || payload.type === "turn_context") {
+          if (!turnId || entryTurnId === turnId) break;
         }
 
         if (entryTurnId && entryTurnId !== turnId) continue;
@@ -392,8 +399,8 @@ async function readCurrentTurnFinalMessage(threadId: string, turnId: string | nu
         }
 
         const assistantMessage = getAssistantMessageText(payload);
-        const proposedPlan = assistantMessage ? extractProposedPlanBlock(assistantMessage) : null;
-        if (proposedPlan) return assistantMessage.trim();
+        const proposedPlanMessage = assistantMessage ? formatMessageWithProposedPlan(assistantMessage) : null;
+        if (proposedPlanMessage) return assistantMessage.trim();
 
         if (assistantMessage && (payload.phase === "final_answer" || fallbackAssistantMessage === null)) {
           fallbackAssistantMessage = assistantMessage.trim();
@@ -823,11 +830,11 @@ export class SessionManager {
         const phase = itemId ? stream.agentMessagePhases.get(itemId) : undefined;
         if (stream.finalAnswerStarted && phase !== "final_answer") return;
         stream.buffer += params.delta;
-        const proposedPlan = extractProposedPlanBlock(stream.buffer);
-        if (proposedPlan) {
+        const proposedPlanMessage = formatMessageWithProposedPlan(stream.buffer);
+        if (proposedPlanMessage) {
           stream.finalAnswerStarted = true;
           stream.completedPlan = true;
-          stream.buffer = proposedPlan;
+          stream.buffer = proposedPlanMessage.display;
         }
         stream.hasTextOutput = true;
         await this.flushStream(channelId);
@@ -837,11 +844,11 @@ export class SessionManager {
         if (!stream || typeof params.message !== "string" || !params.message.trim()) return;
         const phase = getString(params.phase);
         if (phase && phase !== "final_answer") return;
-        const proposedPlan = extractProposedPlanBlock(params.message);
-        if (!proposedPlan && stream.completedPlan) return;
+        const proposedPlanMessage = formatMessageWithProposedPlan(params.message);
+        if (!proposedPlanMessage && stream.completedPlan) return;
         stream.finalAnswerStarted = true;
-        stream.completedPlan = Boolean(proposedPlan);
-        stream.buffer = proposedPlan ?? params.message.trim();
+        stream.completedPlan = Boolean(proposedPlanMessage);
+        stream.buffer = proposedPlanMessage?.display ?? params.message.trim();
         stream.hasTextOutput = true;
         stream.lastEditTime = 0;
         await this.flushStream(channelId);
@@ -853,11 +860,11 @@ export class SessionManager {
         if (!assistantMessage) return;
         const phase = getString(params.phase);
         if (phase && phase !== "final_answer") return;
-        const proposedPlan = extractProposedPlanBlock(assistantMessage);
-        if (!proposedPlan && stream.completedPlan) return;
+        const proposedPlanMessage = formatMessageWithProposedPlan(assistantMessage);
+        if (!proposedPlanMessage && stream.completedPlan) return;
         stream.finalAnswerStarted = true;
-        stream.completedPlan = Boolean(proposedPlan);
-        stream.buffer = proposedPlan ?? assistantMessage.trim();
+        stream.completedPlan = Boolean(proposedPlanMessage);
+        stream.buffer = proposedPlanMessage?.display ?? assistantMessage.trim();
         stream.hasTextOutput = true;
         stream.lastEditTime = 0;
         await this.flushStream(channelId);
@@ -918,13 +925,13 @@ export class SessionManager {
           const storedFinalMessage = canRecoverStoredPlan
             ? await readCurrentTurnFinalMessage(active.threadId, active.turnId)
             : null;
-          const proposedPlan =
-            extractProposedPlanBlock(stream.buffer) ??
-            (!stream.completedPlan && storedFinalMessage ? extractProposedPlanBlock(storedFinalMessage) : null);
-          if (proposedPlan) {
+          const proposedPlanMessage =
+            formatMessageWithProposedPlan(stream.buffer) ??
+            (!stream.completedPlan && storedFinalMessage ? formatMessageWithProposedPlan(storedFinalMessage) : null);
+          if (proposedPlanMessage) {
             stream.finalAnswerStarted = true;
             stream.completedPlan = true;
-            stream.buffer = proposedPlan;
+            stream.buffer = proposedPlanMessage.display;
           } else if (storedFinalMessage && !stream.finalAnswerStarted) {
             stream.buffer = storedFinalMessage;
           }
