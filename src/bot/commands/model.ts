@@ -126,7 +126,7 @@ export const data = new SlashCommandBuilder()
   .addStringOption((opt) =>
     opt
       .setName("model")
-      .setDescription("Model name, for example gpt-5.5. Use default to clear.")
+      .setDescription("Model name, for example gpt-5.6-sol. Use default to clear.")
       .setRequired(false)
       .setAutocomplete(true),
   )

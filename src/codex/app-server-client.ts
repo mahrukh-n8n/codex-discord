@@ -132,7 +132,7 @@ export function buildThreadStartParams(cwd: string, options: CodexThreadStartOpt
     params.collaborationMode = {
       mode: options.collaborationMode,
       settings: {
-        model: options.model ?? "gpt-5.5",
+        model: options.model ?? "gpt-5.6-sol",
         reasoningEffort: options.reasoningEffort ?? undefined,
       },
     };
@@ -352,7 +352,7 @@ export class CodexAppServerClient extends EventEmitter {
       params.collaborationMode = {
         mode: options.collaborationMode,
         settings: {
-          model: options.model ?? "gpt-5.5",
+          model: options.model ?? "gpt-5.6-sol",
           reasoning_effort: options.reasoningEffort ?? undefined,
         },
       };

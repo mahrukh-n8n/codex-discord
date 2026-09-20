@@ -14,6 +14,7 @@ vi.mock("better-sqlite3", async () => {
 
 import {
   initDatabase,
+  upgradeSavedCodexModels,
   registerProject,
   unregisterProject,
   getProject,
@@ -100,6 +101,29 @@ describe("database", () => {
       setProjectCodexSettings("ch1", null, null);
       expect(getProject("ch1")!.codex_model).toBeNull();
       expect(getProject("ch1")!.reasoning_effort).toBeNull();
+    });
+
+    it("upgrades saved Codex model choices at startup", () => {
+      const replacements = [
+        ["gpt-5.4", "gpt-5.6-terra"],
+        ["gpt-5.4-mini", "gpt-5.6-luna"],
+        ["gpt-5.5", "gpt-5.6-sol"],
+        ["gpt-5.3-codex-spark", "gpt-5.6-luna"],
+      ];
+      for (const [index, [oldModel]] of replacements.entries()) {
+        registerProject(`old-${index}`, "/p", "guild1");
+        setProjectCodexSettings(`old-${index}`, oldModel, "high");
+      }
+      registerProject("custom", "/p", "guild1");
+      setProjectCodexSettings("custom", "gpt-6-astra", "medium");
+
+      upgradeSavedCodexModels();
+
+      for (const [index, [, newModel]] of replacements.entries()) {
+        expect(getProject(`old-${index}`)!.codex_model).toBe(newModel);
+        expect(getProject(`old-${index}`)!.reasoning_effort).toBe("high");
+      }
+      expect(getProject("custom")!.codex_model).toBe("gpt-6-astra");
     });
 
     it("setProjectCollaborationMode updates plan/code mode", () => {

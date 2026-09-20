@@ -17,4 +17,13 @@ describe("buildThreadStartParams", () => {
       sandbox: "danger-full-access",
     });
   });
+
+  it("uses a current Codex model for collaboration mode unless one is selected", () => {
+    expect(buildThreadStartParams("/project", { collaborationMode: "plan" })).toMatchObject({
+      collaborationMode: { settings: { model: "gpt-5.6-sol" } },
+    });
+    expect(buildThreadStartParams("/project", { collaborationMode: "plan", model: "gpt-6-astra" })).toMatchObject({
+      collaborationMode: { settings: { model: "gpt-6-astra" } },
+    });
+  });
 });

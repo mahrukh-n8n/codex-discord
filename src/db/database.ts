@@ -36,6 +36,21 @@ export function initDatabase(): void {
   ensureColumn("projects", "codex_model", "TEXT");
   ensureColumn("projects", "reasoning_effort", "TEXT");
   ensureColumn("projects", "collaboration_mode", "TEXT");
+
+  upgradeSavedCodexModels();
+}
+
+export function upgradeSavedCodexModels(): void {
+  // Keep saved channel choices usable after Codex model retirements.
+  db.exec(`
+    UPDATE projects SET codex_model = CASE codex_model
+      WHEN 'gpt-5.4' THEN 'gpt-5.6-terra'
+      WHEN 'gpt-5.4-mini' THEN 'gpt-5.6-luna'
+      WHEN 'gpt-5.5' THEN 'gpt-5.6-sol'
+      WHEN 'gpt-5.3-codex-spark' THEN 'gpt-5.6-luna'
+    END
+    WHERE codex_model IN ('gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.3-codex-spark');
+  `);
 }
 
 function ensureColumn(table: string, column: string, definition: string): void {

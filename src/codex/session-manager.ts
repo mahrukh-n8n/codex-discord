@@ -613,7 +613,7 @@ export class SessionManager {
 
       if (!threadId) {
         const thread = await codexAppServer.startThread(project.project_path, {
-          model: project.codex_model,
+          model: project.codex_model ?? (project.collaboration_mode ? defaultSettings.model : null),
           reasoningEffort: project.reasoning_effort,
           collaborationMode: project.collaboration_mode,
           autoApprove: Boolean(project.auto_approve),
@@ -703,7 +703,7 @@ export class SessionManager {
 
     try {
       const turn = await codexAppServer.startTurn(threadId, turnInput, {
-        model: project.codex_model,
+        model: project.codex_model ?? (project.collaboration_mode ? defaultSettings.model : null),
         reasoningEffort: project.reasoning_effort,
         collaborationMode: project.collaboration_mode,
       });
