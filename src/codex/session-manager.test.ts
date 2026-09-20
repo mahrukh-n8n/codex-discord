@@ -1298,6 +1298,7 @@ describe("SessionManager streaming output", () => {
       model: "gpt-5.5",
       reasoningEffort: "high",
       collaborationMode: "plan",
+      autoApprove: false,
     });
     expect((manager as any).sessions.get("channel-model").turnId).toBe("turn-model");
   });
@@ -1391,6 +1392,7 @@ describe("SessionManager streaming output", () => {
       model: "gpt-5.5",
       reasoningEffort: "high",
       collaborationMode: null,
+      autoApprove: false,
     });
   });
 
@@ -1400,8 +1402,8 @@ describe("SessionManager streaming output", () => {
     fs.writeFileSync(
       threadPath,
       `${JSON.stringify({
+        type: "turn_context",
         payload: {
-          type: "turn_context",
           model: "gpt-5.5",
           reasoning_effort: "medium",
           approval_policy: "on-request",
@@ -1443,6 +1445,12 @@ describe("SessionManager streaming output", () => {
 
     expect(codexAppServer.resumeThread).not.toHaveBeenCalled();
     expect(codexAppServer.startThread).toHaveBeenCalledWith("/project", {
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+      collaborationMode: "plan",
+      autoApprove: true,
+    });
+    expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-new", { prompt: "hello" }, {
       model: "gpt-5.5",
       reasoningEffort: "medium",
       collaborationMode: "plan",
@@ -1494,6 +1502,7 @@ describe("SessionManager streaming output", () => {
       model: "gpt-5.5",
       reasoningEffort: "high",
       collaborationMode: "plan",
+      autoApprove: false,
     });
   });
 

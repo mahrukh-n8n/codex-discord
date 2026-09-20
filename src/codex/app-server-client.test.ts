@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { buildThreadStartParams } from "./app-server-client.js";
+import { describe, expect, it, vi } from "vitest";
+import { buildThreadStartParams, CodexAppServerClient } from "./app-server-client.js";
 
 describe("buildThreadStartParams", () => {
   it("starts threads without the workspace sandbox that fails in the user service", () => {
@@ -25,5 +25,19 @@ describe("buildThreadStartParams", () => {
     expect(buildThreadStartParams("/project", { collaborationMode: "plan", model: "gpt-6-astra" })).toMatchObject({
       collaborationMode: { settings: { model: "gpt-6-astra" } },
     });
+  });
+});
+
+describe("startTurn", () => {
+  it("keeps the unrestricted sandbox and approval policy on resumed turns", async () => {
+    const client = new CodexAppServerClient();
+    const request = vi.spyOn(client, "request").mockResolvedValue({ turn: { id: "turn-1" } });
+
+    await client.startTurn("thread-1", "run pwd", { autoApprove: true });
+
+    expect(request).toHaveBeenCalledWith("turn/start", expect.objectContaining({
+      sandboxPolicy: { type: "dangerFullAccess" },
+      approvalPolicy: "never",
+    }));
   });
 });

@@ -175,7 +175,7 @@ async function readLatestThreadContext(threadId: string): Promise<ThreadContextS
       try {
         const entry = JSON.parse(line) as Record<string, unknown>;
         const payload = isObject(entry.payload) ? entry.payload : null;
-        if (payload?.type !== "turn_context") continue;
+        if (!payload || (entry.type !== "turn_context" && payload.type !== "turn_context")) continue;
         const collaborationMode = isObject(payload.collaboration_mode)
           ? getString(payload.collaboration_mode.mode)
           : getString(payload.collaboration_mode);
@@ -212,10 +212,11 @@ async function shouldStartFreshThreadForInput(
     return true;
   }
 
-  if (project?.auto_approve && (
-    threadContext.approvalPolicy === "on-request" ||
-    threadContext.sandboxPolicy === "workspace-write"
-  )) {
+  if (threadContext.sandboxPolicy && threadContext.sandboxPolicy !== "danger-full-access") {
+    return true;
+  }
+
+  if (project?.auto_approve && threadContext.approvalPolicy === "on-request") {
     return true;
   }
 
@@ -706,6 +707,7 @@ export class SessionManager {
         model: project.codex_model ?? (project.collaboration_mode ? defaultSettings.model : null),
         reasoningEffort: project.reasoning_effort,
         collaborationMode: project.collaboration_mode,
+        autoApprove: Boolean(project.auto_approve),
       });
       const active = this.sessions.get(channelId);
       if (active && !active.turnId && typeof turn.id === "string") {

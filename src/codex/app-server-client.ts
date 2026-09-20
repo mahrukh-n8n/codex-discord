@@ -63,6 +63,7 @@ export interface CodexTurnStartOptions {
   model?: string | null;
   reasoningEffort?: string | null;
   collaborationMode?: CodexCollaborationModeName | null;
+  autoApprove?: boolean;
 }
 
 export interface CodexTurnInput {
@@ -346,6 +347,8 @@ export class CodexAppServerClient extends EventEmitter {
     const params: Record<string, unknown> = {
       threadId,
       input: items,
+      approvalPolicy: options.autoApprove ? "never" : "on-request",
+      sandboxPolicy: { type: "dangerFullAccess" },
     };
 
     if (options.collaborationMode) {
