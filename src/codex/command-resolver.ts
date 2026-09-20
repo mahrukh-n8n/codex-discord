@@ -26,21 +26,26 @@ function saveCache(cache: RuntimeCache): void {
   }
 }
 
-function commandWorks(command: string): boolean {
+function commandVersion(command: string): number[] | null {
   try {
     const result = spawnSync(command, ["--version"], {
       encoding: "utf-8",
       windowsHide: true,
       timeout: 10_000,
     });
-    return result.status === 0;
+    if (result.status !== 0) return null;
+    const version = `${result.stdout ?? ""} ${result.stderr ?? ""}`.match(/\b(\d+)\.(\d+)\.(\d+)\b/);
+    return version ? version.slice(1).map(Number) : [0, 0, 0];
   } catch {
-    return false;
+    return null;
   }
 }
 
-function isBareCommand(command: string): boolean {
-  return !command.includes("/") && !command.includes("\\");
+function isNewerVersion(candidate: number[], current: number[]): boolean {
+  for (let index = 0; index < 3; index++) {
+    if (candidate[index] !== current[index]) return candidate[index] > current[index];
+  }
+  return false;
 }
 
 function uniqueCandidates(candidates: Array<string | undefined | null>): string[] {
@@ -79,19 +84,31 @@ function unixCandidates(): string[] {
 
 export function resolveCodexCommand(): string {
   const cache = loadCache();
-  if (cache.codexCommand && (process.platform === "win32" || !isBareCommand(cache.codexCommand)) && commandWorks(cache.codexCommand)) {
-    return cache.codexCommand;
+  const explicitCommand = process.env.CODEX_BIN?.trim();
+  if (explicitCommand && commandVersion(explicitCommand)) {
+    return explicitCommand;
   }
 
-  const candidates = process.platform === "win32"
-    ? ["codex.cmd", "codex.exe", "codex"]
-    : unixCandidates();
+  const candidates = uniqueCandidates([
+    cache.codexCommand,
+    ...(process.platform === "win32"
+      ? ["codex.cmd", "codex.exe", "codex"]
+      : unixCandidates()),
+  ]);
 
+  let selected: string | null = null;
+  let selectedVersion = [0, 0, 0];
   for (const candidate of candidates) {
-    if (!commandWorks(candidate)) continue;
-    saveCache({ ...cache, codexCommand: candidate });
-    return candidate;
+    const version = commandVersion(candidate);
+    if (!version) continue;
+    if (selected && !isNewerVersion(version, selectedVersion)) continue;
+    selected = candidate;
+    selectedVersion = version;
   }
 
+  if (selected) {
+    if (selected !== cache.codexCommand) saveCache({ ...cache, codexCommand: selected });
+    return selected;
+  }
   return process.platform === "win32" ? "codex.cmd" : "codex";
 }
