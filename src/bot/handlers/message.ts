@@ -162,6 +162,17 @@ export async function handleMessage(message: Message): Promise<void> {
           ].join("\n"),
         );
         pendingAnswerParts.push(transcript);
+        try {
+          const replyText = `${L("🎙️ Transcript:", "🎙️ 음성 전사:")}\n${transcript}`;
+          for (let offset = 0; offset < replyText.length; offset += 1900) {
+            await message.reply({
+              content: replyText.slice(offset, offset + 1900),
+              allowedMentions: { parse: [], repliedUser: false },
+            });
+          }
+        } catch (error) {
+          console.warn("[audio] Failed to post transcript to Discord:", error instanceof Error ? error.message : error);
+        }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         console.warn(`[audio] Transcription failed for ${attachment.name ?? path.basename(result.filePath)}: ${reason}`);
@@ -215,7 +226,7 @@ export async function handleMessage(message: Message): Promise<void> {
       await message.reply(L("⏳ A message is already waiting to be queued. Please press the button first.", "⏳ 이미 큐 추가 대기 중인 메시지가 있습니다. 버튼을 먼저 눌러주세요."));
       return;
     }
-    if (sessionManager.isQueueFull(message.channelId)) {
+    if (await sessionManager.isQueueFull(message.channelId)) {
       await message.reply(L("⏳ Queue is full (max 5). Please wait for the current task to finish.", "⏳ 큐가 가득 찼습니다 (최대 5개). 현재 작업 완료를 기다려주세요."));
       return;
     }
@@ -225,9 +236,14 @@ export async function handleMessage(message: Message): Promise<void> {
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(`queue-yes:${message.channelId}`)
-        .setLabel(L("Add to Queue", "큐에 추가"))
+        .setLabel(L("Queue after task", "작업 후 대기열"))
         .setStyle(ButtonStyle.Success)
         .setEmoji("✅"),
+      new ButtonBuilder()
+        .setCustomId(`queue-steer:${message.channelId}`)
+        .setLabel(L("Send now", "지금 보내기"))
+        .setStyle(ButtonStyle.Primary)
+        .setEmoji("➡️"),
       new ButtonBuilder()
         .setCustomId(`queue-no:${message.channelId}`)
         .setLabel(L("Cancel", "취소"))

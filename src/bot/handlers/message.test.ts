@@ -87,6 +87,10 @@ describe("handleMessage audio transcription", () => {
 
     await handleMessage(message);
 
+    expect(message.reply).toHaveBeenCalledWith({
+      content: "🎙️ Transcript:\nhello from audio",
+      allowedMentions: { parse: [], repliedUser: false },
+    });
     expect(sessionManager.sendMessage).toHaveBeenCalledWith(
       message.channel,
       expect.objectContaining({
@@ -288,6 +292,10 @@ describe("handleMessage audio transcription", () => {
     await handleMessage(message);
 
     expect(sessionManager.resolvePendingUserInput).toHaveBeenCalledWith("chan-1", "hello from audio");
+    expect(message.reply).toHaveBeenCalledWith({
+      content: "🎙️ Transcript:\nhello from audio",
+      allowedMentions: { parse: [], repliedUser: false },
+    });
     expect(message.react).toHaveBeenCalledWith("✅");
     expect(sessionManager.sendMessage).not.toHaveBeenCalled();
   });

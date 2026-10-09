@@ -73,7 +73,11 @@ export function createStopButton(
   );
 }
 
-export function createCompletedButton(channelId?: string, canImplementPlan = false): ActionRowBuilder<ButtonBuilder> {
+export function createCompletedButton(
+  channelId?: string,
+  canImplementPlan = false,
+  sessionId?: string,
+): ActionRowBuilder<ButtonBuilder> {
   const buttons = [
     new ButtonBuilder()
       .setCustomId("completed")
@@ -89,6 +93,21 @@ export function createCompletedButton(channelId?: string, canImplementPlan = fal
         .setCustomId(`implement-plan:${channelId}`)
         .setLabel(L("Implement Plan", "계획 구현"))
         .setStyle(ButtonStyle.Success),
+    );
+  }
+
+  if (sessionId) {
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(`session-resume:${sessionId}`)
+        .setLabel(L("Resume Session", "세션 재개"))
+        .setStyle(ButtonStyle.Primary)
+        .setEmoji("▶️"),
+      new ButtonBuilder()
+        .setCustomId(`session-rename:${sessionId}`)
+        .setLabel(L("Rename", "이름 변경"))
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji("✏️"),
     );
   }
 
@@ -308,10 +327,16 @@ export function createCompletionSummaryText(
     reasoning?: string | null;
     contextStatus?: string | null;
     limitStatus?: string | null;
+    sessionName?: string | null;
   } = {},
 ): string {
   const duration = `${(durationMs / 1000).toFixed(1)}s`;
   const modelReasoning = [options.model, options.reasoning].filter(Boolean).join(" / ");
+  const normalizedSessionName = options.sessionName?.replace(/\s+/g, " ").trim();
+  const sessionNameChars = Array.from(normalizedSessionName ?? "");
+  const sessionName = normalizedSessionName && sessionNameChars.length > 96
+    ? `${sessionNameChars.slice(0, 95).join("")}…`
+    : normalizedSessionName;
   const titleParts = [L("✅ Task Complete", "✅ 작업 완료")];
   if (modelReasoning) titleParts.push(modelReasoning);
   titleParts.push(duration);
@@ -320,5 +345,6 @@ export function createCompletionSummaryText(
     titleParts.join(" | "),
     options.contextStatus ? `${L("Context Used", "컨텍스트 사용량")} | ${options.contextStatus}` : null,
     options.limitStatus ? `${L("Limit", "한도")} | ${options.limitStatus}` : null,
+    sessionName ? `${L("Session", "세션")} | ${sessionName}` : null,
   ].filter(Boolean).join("\n");
 }

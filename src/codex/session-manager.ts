@@ -12,6 +12,7 @@ import {
 } from "../db/database.js";
 import { L } from "../utils/i18n.js";
 import { codexAppServer, type CodexTurnInput } from "./app-server-client.js";
+import { getStoredThread } from "./storage.js";
 import { fetchCodexUsage, getCodexUsageRows, getUsagePercentLeft, type CodexUsageData } from "./usage.js";
 import {
   createAskUserQuestionEmbed,
@@ -553,7 +554,6 @@ export class SessionManager {
   private sessions = new Map<string, ActiveSession>();
   private initialized = false;
   private static readonly MAX_QUEUE_SIZE = 5;
-  private messageQueue = new Map<string, { channel: TextChannel; input: CodexTurnInput }[]>();
   private pendingQueuePrompts = new Map<string, { channel: TextChannel; input: CodexTurnInput }>();
   private streamState = new Map<string, StreamState>();
   private notificationQueue: Promise<void> = Promise.resolve();
@@ -940,11 +940,13 @@ export class SessionManager {
           const tokenStats = await readLatestThreadTokenStats(active.threadId);
           const limitStatus = tokenStats.limitStatus ?? stream.limitStatus ?? await fetchFreshLimitStatus();
           const contextStatus = tokenStats.contextStatus ?? stream.contextStatus;
+          const sessionName = getStoredThread(active.threadId)?.title?.trim() || `Session ${active.threadId.slice(0, 8)}`;
           const completion = createCompletionSummaryText(durationMs, {
             model: stream.model,
             reasoning: stream.reasoning,
             contextStatus,
             limitStatus,
+            sessionName,
           });
           stream.buffer = stream.buffer.trimEnd()
             ? `${stream.buffer.trimEnd()}\n\n${completion}`
@@ -1123,7 +1125,7 @@ export class SessionManager {
           content: chunks[i] || "...",
           components: isLastChunk
             ? final
-              ? [createCompletedButton(channelId, stream.completedPlan)]
+              ? [createCompletedButton(channelId, stream.completedPlan, active.threadId)]
               : [stream.stopRow]
             : [],
         };
@@ -1177,20 +1179,6 @@ export class SessionManager {
     this.sessions.delete(channelId);
     pendingCustomInputs.delete(channelId);
 
-    const queue = this.messageQueue.get(channelId);
-    if (queue && queue.length > 0) {
-      const next = queue.shift()!;
-      if (queue.length === 0) this.messageQueue.delete(channelId);
-      const remaining = queue.length;
-      const preview = next.input.prompt.length > 40 ? next.input.prompt.slice(0, 40) + "…" : next.input.prompt;
-      const msg = remaining > 0
-        ? L(`📨 Processing queued message... (remaining: ${remaining})\n> ${preview}`, `📨 대기 중이던 메시지를 처리합니다... (남은 큐: ${remaining}개)\n> ${preview}`)
-        : L(`📨 Processing queued message...\n> ${preview}`, `📨 대기 중이던 메시지를 처리합니다...\n> ${preview}`);
-      next.channel.send(msg).catch(() => {});
-      this.sendMessage(next.channel, next.input).catch((err) => {
-        console.error("Queue sendMessage error:", err);
-      });
-    }
   }
 
   isActive(channelId: string): boolean {
@@ -1269,13 +1257,26 @@ export class SessionManager {
     });
   }
 
-  confirmQueue(channelId: string): boolean {
+  async confirmQueue(channelId: string): Promise<number | null> {
     const pending = this.pendingQueuePrompts.get(channelId);
-    if (!pending) return false;
+    const active = this.sessions.get(channelId);
+    if (!pending || !active) return null;
+    const existing = await codexAppServer.listQueuedTurns(active.threadId);
+    if (existing.length >= SessionManager.MAX_QUEUE_SIZE) {
+      throw new Error("Queue is full (max 5). Please wait for the current task to finish.");
+    }
+    await codexAppServer.queueTurn(active.threadId, pending.input);
     this.pendingQueuePrompts.delete(channelId);
-    const queue = this.messageQueue.get(channelId) ?? [];
-    queue.push(pending);
-    this.messageQueue.set(channelId, queue);
+    return existing.length + 1;
+  }
+
+  async steerPendingMessage(channelId: string): Promise<boolean> {
+    const pending = this.pendingQueuePrompts.get(channelId);
+    const active = this.sessions.get(channelId);
+    if (!pending || !active?.turnId) return false;
+    const result = await codexAppServer.steerTurn(active.threadId, active.turnId, pending.input);
+    active.turnId = result.turnId;
+    this.pendingQueuePrompts.delete(channelId);
     return true;
   }
 
@@ -1283,40 +1284,60 @@ export class SessionManager {
     this.pendingQueuePrompts.delete(channelId);
   }
 
-  isQueueFull(channelId: string): boolean {
-    const queue = this.messageQueue.get(channelId) ?? [];
-    return queue.length >= SessionManager.MAX_QUEUE_SIZE;
+  async isQueueFull(channelId: string): Promise<boolean> {
+    const threadId = this.sessions.get(channelId)?.threadId;
+    if (!threadId) return false;
+    return (await codexAppServer.listQueuedTurns(threadId)).length >= SessionManager.MAX_QUEUE_SIZE;
   }
 
   hasQueue(channelId: string): boolean {
     return this.pendingQueuePrompts.has(channelId);
   }
 
-  getQueueSize(channelId: string): number {
-    return (this.messageQueue.get(channelId) ?? []).length;
+  async getQueueSize(channelId: string): Promise<number> {
+    const threadId = await this.getThreadIdForQueue(channelId);
+    if (!threadId) return 0;
+    return (await codexAppServer.listQueuedTurns(threadId)).length;
   }
 
-  getQueue(channelId: string): { channel: TextChannel; prompt: string }[] {
-    return (this.messageQueue.get(channelId) ?? []).map((entry) => ({
-      channel: entry.channel,
-      prompt: entry.input.prompt,
+  async getQueue(channelId: string): Promise<{ id: string; prompt: string }[]> {
+    const threadId = await this.getThreadIdForQueue(channelId);
+    if (!threadId) return [];
+    const queue = await codexAppServer.listQueuedTurns(threadId);
+    return queue.map((entry) => ({
+      id: entry.id,
+      prompt: entry.input.filter((item) => item.type === "text").map((item) => item.text ?? "").join("\n"),
     }));
   }
 
-  clearQueue(channelId: string): number {
-    const queue = this.messageQueue.get(channelId) ?? [];
-    const count = queue.length;
-    this.messageQueue.delete(channelId);
+  async clearQueue(channelId: string): Promise<number> {
+    const threadId = await this.getThreadIdForQueue(channelId);
     this.pendingQueuePrompts.delete(channelId);
+    if (!threadId) return 0;
+    const queue = await codexAppServer.listQueuedTurns(threadId);
+    let count = 0;
+    for (const entry of queue) {
+      if (await codexAppServer.deleteQueuedTurn(threadId, entry.id)) count += 1;
+    }
     return count;
   }
 
-  removeFromQueue(channelId: string, index: number): string | null {
-    const queue = this.messageQueue.get(channelId) ?? [];
-    if (index < 0 || index >= queue.length) return null;
-    const [removed] = queue.splice(index, 1);
-    if (queue.length === 0) this.messageQueue.delete(channelId);
-    return removed.input.prompt;
+  async removeFromQueue(channelId: string, queuedSubmissionId: string): Promise<string | null> {
+    const threadId = await this.getThreadIdForQueue(channelId);
+    if (!threadId) return null;
+    const queue = await codexAppServer.listQueuedTurns(threadId);
+    const entry = queue.find((item) => item.id === queuedSubmissionId);
+    if (!entry || !(await codexAppServer.deleteQueuedTurn(threadId, entry.id))) return null;
+    return entry.input.filter((item) => item.type === "text").map((item) => item.text ?? "").join("\n");
+  }
+
+  private async getThreadIdForQueue(channelId: string): Promise<string | null> {
+    const active = this.sessions.get(channelId);
+    if (active) return active.threadId;
+    const threadId = getSession(channelId)?.session_id;
+    if (!threadId) return null;
+    await codexAppServer.resumeThread(threadId);
+    return threadId;
   }
 }
 

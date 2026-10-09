@@ -9,7 +9,7 @@ import {
 } from "discord.js";
 import { getConfig } from "../utils/config.js";
 import { handleMessage } from "./handlers/message.js";
-import { handleButtonInteraction, handleSelectMenuInteraction } from "./handlers/interaction.js";
+import { handleButtonInteraction, handleModalSubmitInteraction, handleSelectMenuInteraction } from "./handlers/interaction.js";
 import { isAllowedUser } from "../security/guard.js";
 import { L } from "../utils/i18n.js";
 import * as registerCmd from "./commands/register.js";
@@ -93,6 +93,8 @@ export async function startBot(): Promise<Client> {
         await handleButtonInteraction(interaction);
       } else if (interaction.isStringSelectMenu()) {
         await handleSelectMenuInteraction(interaction);
+      } else if (interaction.isModalSubmit()) {
+        await handleModalSubmitInteraction(interaction);
       }
     } catch (error) {
       console.error("Interaction error:", error);

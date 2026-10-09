@@ -4,12 +4,15 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } from "discord.js";
 import { isAllowedUser } from "../../security/guard.js";
 import { sessionManager } from "../../codex/session-manager.js";
 import { upsertSession, getSession, setProjectCollaborationMode } from "../../db/database.js";
 import { codexAppServer } from "../../codex/app-server-client.js";
-import { deleteStoredThread } from "../../codex/storage.js";
+import { deleteStoredThread, getStoredThread } from "../../codex/storage.js";
 import { L } from "../../utils/i18n.js";
 
 export async function handleButtonInteraction(
@@ -52,19 +55,41 @@ export async function handleButtonInteraction(
   }
 
   if (action === "queue-yes") {
-    const confirmed = sessionManager.confirmQueue(requestId);
-    if (!confirmed) {
+    try {
+      const queueSize = await sessionManager.confirmQueue(requestId);
+      if (queueSize === null) {
+        await interaction.update({
+          content: L("⏳ Queue request expired because the task is no longer active.", "⏳ 작업이 더 이상 활성 상태가 아니어서 요청이 만료되었습니다."),
+          components: [],
+        });
+        return;
+      }
       await interaction.update({
-        content: L("⏳ Queue request has expired.", "⏳ 큐 요청이 만료되었습니다."),
+        content: L(`📨 Message saved in Codex queue (${queueSize}/5). It will run after the current task.`, `📨 메시지가 Codex 대기열에 저장되었습니다 (${queueSize}/5). 현재 작업 후 실행됩니다.`),
         components: [],
       });
-      return;
+    } catch (error) {
+      await interaction.update({
+        content: `❌ ${error instanceof Error ? error.message : "Failed to add message to Codex queue."}`,
+      });
     }
-    const queueSize = sessionManager.getQueueSize(requestId);
-    await interaction.update({
-      content: L(`📨 Message added to queue (${queueSize}/5). It will be processed after the current task.`, `📨 메시지가 큐에 추가되었습니다 (${queueSize}/5). 이전 작업 완료 후 자동으로 처리됩니다.`),
-      components: [],
-    });
+    return;
+  }
+
+  if (action === "queue-steer") {
+    try {
+      const sent = await sessionManager.steerPendingMessage(requestId);
+      await interaction.update({
+        content: sent
+          ? L("➡️ Sent to the active Codex task. It will be handled at the next safe point.", "➡️ 진행 중인 Codex 작업에 전달했습니다. 다음 안전한 시점에 처리됩니다.")
+          : L("⏳ The task is no longer active. Send your message again.", "⏳ 작업이 더 이상 활성 상태가 아닙니다. 메시지를 다시 보내주세요."),
+        components: [],
+      });
+    } catch (error) {
+      await interaction.update({
+        content: `❌ ${error instanceof Error ? error.message : "Failed to send to the active Codex task."}`,
+      });
+    }
     return;
   }
 
@@ -118,6 +143,34 @@ export async function handleButtonInteraction(
     return;
   }
 
+  if (action === "session-rename") {
+    const storedName = getStoredThread(requestId)?.title?.replace(/\s+/g, " ").trim() ?? "";
+    const currentName = Array.from(storedName).slice(0, 100).join("");
+    const nameInput = new TextInputBuilder()
+      .setCustomId("name")
+      .setLabel(L("Session name", "세션 이름"))
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setMinLength(1)
+      .setMaxLength(100);
+    if (currentName) nameInput.setValue(currentName);
+
+    const modal = new ModalBuilder()
+      .setCustomId(`session-rename-submit:${requestId}`)
+      .setTitle(L("Rename Session", "세션 이름 변경"))
+      .addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(nameInput));
+    try {
+      await interaction.showModal(modal);
+    } catch (error) {
+      console.error("Failed to open session rename form:", error);
+      await interaction.reply({
+        content: L("Couldn't open the rename form. Please try again.", "이름 변경 양식을 열 수 없습니다. 다시 시도해 주세요."),
+        ephemeral: true,
+      });
+    }
+    return;
+  }
+
   if (action === "session-cancel") {
     await interaction.update({
       content: L("Cancelled.", "취소되었습니다."),
@@ -157,7 +210,7 @@ export async function handleButtonInteraction(
   }
 
   if (action === "queue-clear") {
-    const cleared = sessionManager.clearQueue(requestId);
+    const cleared = await sessionManager.clearQueue(requestId);
     await interaction.update({
       embeds: [
         {
@@ -174,8 +227,8 @@ export async function handleButtonInteraction(
   if (action === "queue-remove") {
     const lastColon = requestId.lastIndexOf(":");
     const channelId = requestId.slice(0, lastColon);
-    const index = parseInt(requestId.slice(lastColon + 1), 10);
-    const removed = sessionManager.removeFromQueue(channelId, index);
+    const queuedSubmissionId = requestId.slice(lastColon + 1);
+    const removed = await sessionManager.removeFromQueue(channelId, queuedSubmissionId);
 
     if (!removed) {
       await interaction.update({
@@ -187,7 +240,7 @@ export async function handleButtonInteraction(
     }
 
     const preview = removed.length > 60 ? removed.slice(0, 60) + "…" : removed;
-    const queue = sessionManager.getQueue(channelId);
+    const queue = await sessionManager.getQueue(channelId);
     if (queue.length === 0) {
       await interaction.update({
         embeds: [
@@ -212,7 +265,7 @@ export async function handleButtonInteraction(
     const rows: ActionRowBuilder<ButtonBuilder>[] = [];
     const itemButtons = queue.map((_: unknown, idx: number) =>
       new ButtonBuilder()
-        .setCustomId(`queue-remove:${channelId}:${idx}`)
+        .setCustomId(`queue-remove:${channelId}:${queue[idx].id}`)
         .setLabel(`❌ ${idx + 1}`)
         .setStyle(ButtonStyle.Secondary)
     );
@@ -379,6 +432,11 @@ export async function handleSelectMenuInteraction(
       .setStyle(ButtonStyle.Success)
       .setEmoji("▶️"),
     new ButtonBuilder()
+      .setCustomId(`session-rename:${selectedSessionId}`)
+      .setLabel(L("Rename", "이름 변경"))
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji("✏️"),
+    new ButtonBuilder()
       .setCustomId(`session-delete:${selectedSessionId}`)
       .setLabel(L("Delete", "삭제"))
       .setStyle(ButtonStyle.Danger)
@@ -402,4 +460,37 @@ export async function handleSelectMenuInteraction(
     ],
     components: [row],
   });
+}
+
+export async function handleModalSubmitInteraction(
+  interaction: import("discord.js").ModalSubmitInteraction,
+): Promise<void> {
+  if (!isAllowedUser(interaction.user.id)) {
+    await interaction.reply({ content: L("You are not authorized.", "권한이 없습니다."), ephemeral: true });
+    return;
+  }
+
+  const prefix = "session-rename-submit:";
+  if (!interaction.customId.startsWith(prefix)) return;
+
+  const threadId = interaction.customId.slice(prefix.length);
+  const name = interaction.fields.getTextInputValue("name").replace(/\s+/g, " ").trim();
+  if (!name) {
+    await interaction.reply({ content: L("Session name cannot be empty.", "세션 이름은 비워둘 수 없습니다."), ephemeral: true });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    await codexAppServer.setThreadName(threadId, name);
+    if (interaction.isFromMessage() && interaction.message) {
+      const updatedContent = interaction.message.content.replace(/^(?:Session|세션) \|.*$/m, `Session | ${name}`);
+      if (updatedContent !== interaction.message.content) {
+        await interaction.message.edit({ content: updatedContent });
+      }
+    }
+    await interaction.editReply(L(`✅ Session renamed to: ${name}`, `✅ 세션 이름을 변경했습니다: ${name}`));
+  } catch (error) {
+    await interaction.editReply(`❌ ${error instanceof Error ? error.message : "Failed to rename session."}`);
+  }
 }

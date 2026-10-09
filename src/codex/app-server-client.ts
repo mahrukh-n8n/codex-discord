@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveCodexCommand } from "./command-resolver.js";
@@ -69,6 +70,12 @@ export interface CodexTurnStartOptions {
 export interface CodexTurnInput {
   prompt: string;
   imagePaths?: string[];
+}
+
+export interface CodexQueuedSubmission {
+  id: string;
+  input: Array<{ type: string; text?: string }>;
+  clientUserMessageId: string;
 }
 
 export type CodexCollaborationModeName = "plan" | "code" | "default";
@@ -331,6 +338,10 @@ export class CodexAppServerClient extends EventEmitter {
     return result.thread;
   }
 
+  async setThreadName(threadId: string, name: string): Promise<void> {
+    await this.request("thread/name/set", { threadId, name });
+  }
+
   async startTurn(
     threadId: string,
     input: string | CodexTurnInput,
@@ -363,6 +374,37 @@ export class CodexAppServerClient extends EventEmitter {
 
     const result = await this.request<{ turn: { id: string } }>("turn/start", params);
     return result.turn;
+  }
+
+  async steerTurn(threadId: string, expectedTurnId: string, input: CodexTurnInput): Promise<{ turnId: string }> {
+    const items: Record<string, unknown>[] = [
+      { type: "text", text: input.prompt, text_elements: [] },
+      ...(input.imagePaths ?? []).map((imagePath) => ({ type: "localImage", path: imagePath })),
+    ];
+    return this.request<{ turnId: string }>("turn/steer", { threadId, expectedTurnId, input: items });
+  }
+
+  async queueTurn(threadId: string, input: CodexTurnInput): Promise<CodexQueuedSubmission> {
+    const items: Record<string, unknown>[] = [
+      { type: "text", text: input.prompt, text_elements: [] },
+      ...(input.imagePaths ?? []).map((imagePath) => ({ type: "localImage", path: imagePath })),
+    ];
+    const result = await this.request<{ queuedSubmission: CodexQueuedSubmission }>("thread/queue/add", {
+      threadId,
+      input: items,
+      clientUserMessageId: randomUUID(),
+    });
+    return result.queuedSubmission;
+  }
+
+  async listQueuedTurns(threadId: string): Promise<CodexQueuedSubmission[]> {
+    const result = await this.request<{ data: CodexQueuedSubmission[] }>("thread/queue/list", { threadId });
+    return result.data ?? [];
+  }
+
+  async deleteQueuedTurn(threadId: string, queuedSubmissionId: string): Promise<boolean> {
+    const result = await this.request<{ deleted: boolean }>("thread/queue/delete", { threadId, queuedSubmissionId });
+    return result.deleted;
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {

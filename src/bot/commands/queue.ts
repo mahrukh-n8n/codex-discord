@@ -35,7 +35,7 @@ export async function execute(
   const subcommand = interaction.options.getSubcommand();
 
   if (subcommand === "list") {
-    const queue = sessionManager.getQueue(channelId);
+    const queue = await sessionManager.getQueue(channelId);
     if (queue.length === 0) {
       await interaction.editReply({
         content: L("No messages in queue.", "큐에 대기 중인 메시지가 없습니다."),
@@ -51,9 +51,9 @@ export async function execute(
       .join("\n\n");
 
     const rows: ActionRowBuilder<ButtonBuilder>[] = [];
-    const itemButtons: ButtonBuilder[] = queue.map((_, idx) =>
+    const itemButtons: ButtonBuilder[] = queue.map((item, idx) =>
       new ButtonBuilder()
-        .setCustomId(`queue-remove:${channelId}:${idx}`)
+        .setCustomId(`queue-remove:${channelId}:${item.id}`)
         .setLabel(`❌ ${idx + 1}`)
         .setStyle(ButtonStyle.Secondary)
     );
@@ -82,7 +82,7 @@ export async function execute(
     return;
   }
 
-  const cleared = sessionManager.clearQueue(channelId);
+  const cleared = await sessionManager.clearQueue(channelId);
   await interaction.editReply({
     embeds: [
       {
