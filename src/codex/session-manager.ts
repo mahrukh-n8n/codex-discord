@@ -940,7 +940,13 @@ export class SessionManager {
           const tokenStats = await readLatestThreadTokenStats(active.threadId);
           const limitStatus = tokenStats.limitStatus ?? stream.limitStatus ?? await fetchFreshLimitStatus();
           const contextStatus = tokenStats.contextStatus ?? stream.contextStatus;
-          const sessionName = getStoredThread(active.threadId)?.title?.trim() || `Session ${active.threadId.slice(0, 8)}`;
+          let sessionName: string | undefined;
+          try {
+            sessionName = (await codexAppServer.readThread(active.threadId, false)).name?.trim() || undefined;
+          } catch {
+            // Keep completion reporting available if the thread metadata read fails.
+          }
+          sessionName ||= getStoredThread(active.threadId)?.title?.trim() || `Session ${active.threadId.slice(0, 8)}`;
           const completion = createCompletionSummaryText(durationMs, {
             model: stream.model,
             reasoning: stream.reasoning,
@@ -1265,7 +1271,19 @@ export class SessionManager {
     if (existing.length >= SessionManager.MAX_QUEUE_SIZE) {
       throw new Error("Queue is full (max 5). Please wait for the current task to finish.");
     }
-    await codexAppServer.queueTurn(active.threadId, pending.input);
+    const queued = await codexAppServer.queueTurn(active.threadId, pending.input);
+    try {
+      // Queue add normally dispatches automatically when the thread is idle and
+      // waits for an active turn to finish. Starting explicitly also recovers a
+      // queue that was left paused after an interruption. The app-server rejects
+      // this with "busy" while a turn is active; that case is expected.
+      await codexAppServer.startQueuedTurn(active.threadId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/thread already has an active or pending turn|busy/i.test(message)) {
+        console.warn(`[codex] Queued submission ${queued.id} was saved but queue start failed: ${message}`);
+      }
+    }
     this.pendingQueuePrompts.delete(channelId);
     return existing.length + 1;
   }

@@ -402,6 +402,10 @@ export class CodexAppServerClient extends EventEmitter {
     return result.data ?? [];
   }
 
+  async startQueuedTurn(threadId: string): Promise<void> {
+    await this.request("thread/queue/start", { threadId });
+  }
+
   async deleteQueuedTurn(threadId: string, queuedSubmissionId: string): Promise<boolean> {
     const result = await this.request<{ deleted: boolean }>("thread/queue/delete", { threadId, queuedSubmissionId });
     return result.deleted;

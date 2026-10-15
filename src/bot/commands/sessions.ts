@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { getProject, getSession, upsertSession } from "../../db/database.js";
+import { codexAppServer } from "../../codex/app-server-client.js";
 import { listStoredThreads } from "../../codex/storage.js";
 import { L } from "../../utils/i18n.js";
 
@@ -77,9 +78,17 @@ export async function getLastAssistantMessageFull(filePath: string): Promise<str
 }
 
 export async function listSessions(projectPath: string): Promise<SessionInfo[]> {
-  return listStoredThreads(projectPath).map((thread) => ({
+  const storedThreads = listStoredThreads(projectPath);
+  let threadNames = new Map<string, string>();
+  try {
+    const liveThreads = await codexAppServer.listThreads(projectPath);
+    threadNames = new Map(liveThreads.flatMap((thread) => thread.name?.trim() ? [[thread.id, thread.name.trim()]] : []));
+  } catch {
+    // Keep the sessions command usable from local storage if app-server is unavailable.
+  }
+  return storedThreads.map((thread) => ({
     sessionId: thread.id,
-    preview: thread.title || "(empty session)",
+    preview: threadNames.get(thread.id) || thread.title || "(empty session)",
     timestamp: new Date(thread.updated_at * 1000).toISOString(),
     source: thread.source,
   }));
