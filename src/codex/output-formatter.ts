@@ -63,11 +63,18 @@ export function splitMessage(text: string): string[] {
 
 export function createStopButton(
   channelId: string,
+  lastReplyAt?: Date,
 ): ActionRowBuilder<ButtonBuilder> {
+  const time = lastReplyAt?.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(`stop:${channelId}`)
-      .setLabel(L("Stop", "중지"))
+      .setLabel(time ? L(`Stop · ${time}`, `중지 · ${time}`) : L("Stop", "중지"))
       .setStyle(ButtonStyle.Danger)
       .setEmoji("⏹️"),
   );

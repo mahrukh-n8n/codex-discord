@@ -1122,6 +1122,7 @@ export class SessionManager {
     const now = Date.now();
     if (!final && now - stream.lastEditTime < 1500) return;
     stream.lastEditTime = now;
+    if (!final) stream.stopRow = createStopButton(channelId, new Date(now));
 
     const chunks = splitMessage(stream.buffer);
     try {
