@@ -25,11 +25,13 @@ vi.mock("./app-server-client.js", () => ({
     on: vi.fn(),
     startThread: vi.fn(),
     resumeThread: vi.fn(),
+    releaseThread: vi.fn().mockResolvedValue(undefined),
     startTurn: vi.fn(),
     respond: vi.fn(),
     interruptTurn: vi.fn(),
     readThread: vi.fn(),
     readRateLimits: vi.fn(),
+    listQueuedTurns: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -945,7 +947,8 @@ describe("SessionManager streaming output", () => {
     const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
     expect(finalEdit.content).toContain("Current answer only");
     expect(finalEdit.content).not.toContain("# Previous Plan");
-    expect(finalEdit.components[0].components).toHaveLength(1);
+    expect(finalEdit.components[0].components.map((component: { custom_id: string }) => component.custom_id))
+      .not.toContain("implement-plan");
   });
 
   it("does not recover stale stored output when completion has no current turn id", async () => {
@@ -1027,7 +1030,8 @@ describe("SessionManager streaming output", () => {
     const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
     expect(finalEdit.content).toContain("Task completed");
     expect(finalEdit.content).not.toContain("Old final answer");
-    expect(finalEdit.components[0].components).toHaveLength(1);
+    expect(finalEdit.components[0].components.map((component: { custom_id: string }) => component.custom_id))
+      .not.toContain("implement-plan");
   });
 
   it("does not recover an older proposed plan after an implementation turn completes", async () => {
@@ -1094,7 +1098,8 @@ describe("SessionManager streaming output", () => {
     const finalEdit = firstMessage.edit.mock.calls.at(-1)?.[0] as any;
     expect(finalEdit.content).toContain("Implemented the plan and ran tests.");
     expect(finalEdit.content).not.toContain("# Old Plan");
-    expect(finalEdit.components[0].components).toHaveLength(1);
+    expect(finalEdit.components[0].components.map((component: { custom_id: string }) => component.custom_id))
+      .not.toContain("implement-plan");
   });
 
   it("uses the current plan-mode final answer instead of an older proposed plan", async () => {
@@ -1194,7 +1199,8 @@ describe("SessionManager streaming output", () => {
     expect(finalEdit.content).toContain("cash/USDT settlement wording");
     expect(finalEdit.content).toContain("Next decision");
     expect(finalEdit.content).not.toContain("# Older Plan");
-    expect(finalEdit.components[0].components).toHaveLength(1);
+    expect(finalEdit.components[0].components.map((component: { custom_id: string }) => component.custom_id))
+      .not.toContain("implement-plan");
   });
 
   it("keeps earlier chunks and sends only newly needed Discord messages", async () => {
@@ -1334,7 +1340,7 @@ describe("SessionManager streaming output", () => {
     });
   });
 
-  it("starts a fresh thread when the saved session model cannot handle images", async () => {
+  it("keeps the saved thread when switching from a text model to an image model", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-thread-"));
     const threadPath = path.join(tempDir, "thread.jsonl");
     fs.writeFileSync(
@@ -1378,14 +1384,9 @@ describe("SessionManager streaming output", () => {
       imagePaths: ["/project/.codex-uploads/test.png"],
     });
 
-    expect(codexAppServer.resumeThread).not.toHaveBeenCalled();
-    expect(codexAppServer.startThread).toHaveBeenCalledWith("/project", {
-      model: "gpt-5.5",
-      reasoningEffort: "high",
-      collaborationMode: null,
-      autoApprove: false,
-    });
-    expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-new", {
+    expect(codexAppServer.resumeThread).toHaveBeenCalledWith("thread-old");
+    expect(codexAppServer.startThread).not.toHaveBeenCalled();
+    expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-old", {
       prompt: "read this image",
       imagePaths: ["/project/.codex-uploads/test.png"],
     }, {
@@ -1396,7 +1397,7 @@ describe("SessionManager streaming output", () => {
     });
   });
 
-  it("starts a fresh thread for auto-approve channels saved with restricted sandbox", async () => {
+  it("keeps the saved thread when applying unrestricted permissions", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-thread-"));
     const threadPath = path.join(tempDir, "thread.jsonl");
     fs.writeFileSync(
@@ -1443,14 +1444,9 @@ describe("SessionManager streaming output", () => {
 
     await manager.sendMessage(channel, "hello");
 
-    expect(codexAppServer.resumeThread).not.toHaveBeenCalled();
-    expect(codexAppServer.startThread).toHaveBeenCalledWith("/project", {
-      model: "gpt-5.5",
-      reasoningEffort: "medium",
-      collaborationMode: "plan",
-      autoApprove: true,
-    });
-    expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-new", { prompt: "hello" }, {
+    expect(codexAppServer.resumeThread).toHaveBeenCalledWith("thread-old");
+    expect(codexAppServer.startThread).not.toHaveBeenCalled();
+    expect(codexAppServer.startTurn).toHaveBeenCalledWith("thread-old", { prompt: "hello" }, {
       model: "gpt-5.5",
       reasoningEffort: "medium",
       collaborationMode: "plan",
@@ -1557,10 +1553,12 @@ describe("SessionManager streaming output", () => {
           "✅ Task Complete | gpt-5.5 / medium | 34.7s",
           "Context Used | 39%",
           "Limit | 5H 81% - W 97%",
+          "Session | Session thread-c",
         ].join("\n"),
       }),
     );
     expect(channel.send).not.toHaveBeenCalled();
+    expect(codexAppServer.releaseThread).toHaveBeenCalledWith("thread-complete");
   });
 
   it("responds to MCP user input requests with the app-server action field", async () => {
@@ -1765,5 +1763,47 @@ describe("SessionManager streaming output", () => {
         },
       ],
     })).toBe("5H 85% - W 98%");
+  });
+});
+
+
+describe("SessionManager writer release", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  for (const method of ["turn/completed", "turn_aborted"]) {
+    it(`releases the writer after ${method}`, async () => {
+      const manager = new SessionManager();
+      (manager as any).sessions.set("channel", { threadId: "thread", turnId: "turn", channelId: "channel" });
+      await (manager as any).handleNotification({ method, params: {
+        threadId: "thread", turn: { id: "turn", status: "completed" },
+      } });
+      expect(codexAppServer.releaseThread).toHaveBeenCalledWith("thread");
+      expect(manager.isActive("channel")).toBe(false);
+    });
+  }
+
+  it("releases the writer after a failed turn", async () => {
+    const manager = new SessionManager();
+    (manager as any).sessions.set("channel", { threadId: "thread", turnId: "turn", channelId: "channel" });
+    await (manager as any).handleNotification({ method: "turn/completed", params: {
+      threadId: "thread", turn: { id: "turn", status: "failed", error: { message: "failed" } },
+    } });
+    expect(codexAppServer.releaseThread).toHaveBeenCalledWith("thread");
+  });
+
+  it("releases the writer when stopped", async () => {
+    const manager = new SessionManager();
+    (manager as any).sessions.set("channel", { threadId: "thread", turnId: "turn", channelId: "channel" });
+    expect(await manager.stopSession("channel")).toBe(true);
+    expect(codexAppServer.interruptTurn).toHaveBeenCalledWith("thread", "turn");
+    expect(codexAppServer.releaseThread).toHaveBeenCalledWith("thread");
+  });
+
+  it("releases an idle writer after inspecting its queue", async () => {
+    const manager = new SessionManager();
+    vi.mocked(getSession).mockReturnValue({ session_id: "idle-thread" } as any);
+    vi.mocked(codexAppServer.listQueuedTurns).mockResolvedValue([]);
+    expect(await manager.getQueueSize("channel")).toBe(0);
+    expect(codexAppServer.releaseThread).toHaveBeenCalledWith("idle-thread");
   });
 });

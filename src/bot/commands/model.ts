@@ -182,7 +182,7 @@ export async function execute(
           `${L("Model", "모델")}: ${displaySetting(updated.codex_model)}`,
           `${L("Reasoning", "추론")}: ${displaySetting(updated.reasoning_effort)}`,
           changed
-            ? L("These settings apply when the next new Codex thread starts.", "이 설정은 다음 새 Codex 스레드가 시작될 때 적용됩니다.")
+            ? L("These settings apply to the next turn in the current session.", "이 설정은 현재 세션의 다음 턴에 적용됩니다.")
             : L("Run `/model model:<name> reasoning:<effort>` to change them.", "`/model model:<이름> reasoning:<수준>`으로 변경하세요."),
           createNewSession
             ? L("A new session is ready. The next message will use these settings.", "새 세션이 준비되었습니다. 다음 메시지는 이 설정을 사용합니다.")

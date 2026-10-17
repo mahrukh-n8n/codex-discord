@@ -157,6 +157,55 @@ export class CodexAppServerClient extends EventEmitter {
   private initialized = false;
   private startPromise: Promise<void> | null = null;
 
+  // A writer belongs to one thread so it can be closed without interrupting
+  // work in another channel. The parent connection handles metadata requests.
+  private threadClients = new Map<string, CodexAppServerClient>();
+  private serverRequestRoutes = new Map<number, { client: CodexAppServerClient; requestId: number }>();
+
+  constructor(private readonly dedicated = false) {
+    super();
+  }
+
+  private createThreadClient(): CodexAppServerClient {
+    const client = new CodexAppServerClient(true);
+    client.on("notification", (notification) => this.emit("notification", notification));
+    client.on("stderr", (line) => this.emit("stderr", line));
+    client.on("serverRequest", (request: JsonRpcServerRequest) => {
+      const id = this.nextRequestId++;
+      this.serverRequestRoutes.set(id, { client, requestId: request.id });
+      this.emit("serverRequest", { ...request, id });
+    });
+    client.on("exit", () => {
+      for (const [threadId, owner] of this.threadClients) {
+        if (owner === client) this.threadClients.delete(threadId);
+      }
+      for (const [id, route] of this.serverRequestRoutes) {
+        if (route.client === client) this.serverRequestRoutes.delete(id);
+      }
+    });
+    return client;
+  }
+
+  async releaseThread(threadId: string): Promise<void> {
+    const client = this.threadClients.get(threadId);
+    if (!client) return;
+    this.threadClients.delete(threadId);
+    await client.close();
+  }
+
+  private async close(): Promise<void> {
+    const child = this.process;
+    if (!child) return;
+    this.initialized = false;
+    this.rejectPendingRequests(new Error("Codex thread released"));
+    // Closing stdio lets the app-server shut down its writer and flush history.
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => child.kill("SIGTERM"), 5_000);
+      child.once("exit", () => { clearTimeout(timeout); resolve(); });
+      child.stdin.end();
+    });
+  }
+
   async ensureStarted(): Promise<void> {
     if (this.initialized) return;
     if (this.startPromise) return this.startPromise;
@@ -295,11 +344,37 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   async request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T> {
+    if (!this.dedicated) {
+      const threadId = typeof params.threadId === "string" ? params.threadId : null;
+      const owner = threadId ? this.threadClients.get(threadId) : undefined;
+      if (owner) return owner.request<T>(method, params);
+      if (method === "thread/start" || method === "thread/resume") {
+        const client = this.createThreadClient();
+        // Register resumes before awaiting so subsequent requests share ownership.
+        if (threadId) this.threadClients.set(threadId, client);
+        try {
+          const result = await client.request<T>(method, params);
+          const thread = (result as { thread?: { id?: string } }).thread;
+          if (thread?.id) this.threadClients.set(thread.id, client);
+          return result;
+        } catch (error) {
+          if (threadId) this.threadClients.delete(threadId);
+          await client.close();
+          throw error;
+        }
+      }
+    }
     await this.ensureStarted();
     return this.requestWithProcess<T>(method, params);
   }
 
   async respond(requestId: number, result: Record<string, unknown>): Promise<void> {
+    const route = this.serverRequestRoutes.get(requestId);
+    if (route) {
+      this.serverRequestRoutes.delete(requestId);
+      return route.client.respond(route.requestId, result);
+    }
+    if (!this.dedicated) return; // The owning writer already exited.
     await this.ensureStarted();
     if (!this.process) throw new Error("Codex app-server is not running");
     this.process.stdin.write(
@@ -361,6 +436,9 @@ export class CodexAppServerClient extends EventEmitter {
       approvalPolicy: options.autoApprove ? "never" : "on-request",
       sandboxPolicy: { type: "dangerFullAccess" },
     };
+
+    if (options.model) params.model = options.model;
+    if (options.reasoningEffort) params.effort = options.reasoningEffort;
 
     if (options.collaborationMode) {
       params.collaborationMode = {

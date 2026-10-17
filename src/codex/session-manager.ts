@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { TextChannel } from "discord.js";
+import type { Message, TextChannel } from "discord.js";
 import {
   upsertSession,
   updateSessionStatus,
@@ -22,13 +22,13 @@ import {
   createToolApprovalEmbed,
   splitMessage,
 } from "./output-formatter.js";
-import { loadCachedCodexModels } from "../bot/commands/model.js";
 
 interface ActiveSession {
   channelId: string;
   channel: TextChannel;
   threadId: string;
   turnId: string | null;
+  completedTurnIds?: Set<string>;
   dbId: string;
 }
 
@@ -64,14 +64,6 @@ type StreamState = {
   finalAnswerStarted: boolean;
   completedPlan: boolean;
   collaborationMode: string | null;
-};
-
-type ThreadContextSnapshot = {
-  model: string | null;
-  reasoning: string | null;
-  collaborationMode: string | null;
-  approvalPolicy: string | null;
-  sandboxPolicy: string | null;
 };
 
 const pendingApprovals = new Map<
@@ -152,84 +144,6 @@ function readCodexDefaultSettings(): { model: string | null; reasoning: string |
 
 function normalizeCollaborationMode(mode: string | null | undefined): string {
   return mode?.trim().toLowerCase() || "default";
-}
-
-function supportsImageInput(model: string | null): boolean | null {
-  if (!model) return null;
-  const cached = loadCachedCodexModels().find((entry) => entry.slug === model);
-  const modalities = Array.isArray((cached as { input_modalities?: unknown }).input_modalities)
-    ? (cached as { input_modalities: unknown[] }).input_modalities
-    : null;
-  if (!modalities) return null;
-  return modalities.includes("image");
-}
-
-async function readLatestThreadContext(threadId: string): Promise<ThreadContextSnapshot> {
-  try {
-    const thread = await codexAppServer.readThread(threadId, false);
-    if (!thread.path) {
-      return { model: null, reasoning: null, collaborationMode: null, approvalPolicy: null, sandboxPolicy: null };
-    }
-
-    const lines = readFileTail(thread.path).trimEnd().split("\n").reverse();
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line) as Record<string, unknown>;
-        const payload = isObject(entry.payload) ? entry.payload : null;
-        if (!payload || (entry.type !== "turn_context" && payload.type !== "turn_context")) continue;
-        const collaborationMode = isObject(payload.collaboration_mode)
-          ? getString(payload.collaboration_mode.mode)
-          : getString(payload.collaboration_mode);
-        return {
-          model: getString(payload.model),
-          reasoning: getString(payload.reasoning_effort),
-          collaborationMode,
-          approvalPolicy: getString(payload.approval_policy),
-          sandboxPolicy: isObject(payload.sandbox_policy)
-            ? getString(payload.sandbox_policy.type)
-            : getString(payload.sandbox_policy),
-        };
-      } catch {
-        // Continue scanning older lines.
-      }
-    }
-  } catch {
-    // Fall through to empty context.
-  }
-
-  return { model: null, reasoning: null, collaborationMode: null, approvalPolicy: null, sandboxPolicy: null };
-}
-
-async function shouldStartFreshThreadForInput(
-  threadId: string,
-  turnInput: CodexTurnInput,
-  project: ReturnType<typeof getProject>,
-  defaultSettings: { model: string | null; reasoning: string | null },
-): Promise<boolean> {
-  const threadContext = await readLatestThreadContext(threadId);
-  const desiredModel = project?.codex_model ?? defaultSettings.model;
-
-  if (desiredModel && threadContext.model && desiredModel !== threadContext.model) {
-    return true;
-  }
-
-  if (threadContext.sandboxPolicy && threadContext.sandboxPolicy !== "danger-full-access") {
-    return true;
-  }
-
-  if (project?.auto_approve && threadContext.approvalPolicy === "on-request") {
-    return true;
-  }
-
-  if ((turnInput.imagePaths?.length ?? 0) > 0) {
-    const activeModel = threadContext.model ?? desiredModel;
-    const imageSupport = supportsImageInput(activeModel);
-    if (imageSupport !== true) {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 export function formatLimitStatusFromUsage(usage: CodexUsageData | null): string | null {
@@ -605,13 +519,6 @@ export class SessionManager {
     const defaultSettings = readCodexDefaultSettings();
 
     try {
-      if (threadId && !existingSession) {
-        const rotateThread = await shouldStartFreshThreadForInput(threadId, turnInput, project, defaultSettings);
-        if (rotateThread) {
-          threadId = null;
-        }
-      }
-
       if (!threadId) {
         const thread = await codexAppServer.startThread(project.project_path, {
           model: project.codex_model ?? (project.collaboration_mode ? defaultSettings.model : null),
@@ -646,17 +553,24 @@ export class SessionManager {
         await channel.send(`❌ ${message}`).catch(() => {});
       }
       updateSessionStatus(channelId, "offline");
-      this.finishSession(channelId);
+      await this.finishSession(channelId);
       return;
     }
 
     upsertSession(dbId, channelId, threadId, "online");
 
     const stopRow = createStopButton(channelId);
-    const currentMessage = await channel.send({
-      content: L("⏳ Thinking...", "⏳ 생각 중..."),
-      components: [stopRow],
-    });
+    let currentMessage: Message<true>;
+    try {
+      currentMessage = await channel.send({
+        content: L("⏳ Thinking...", "⏳ 생각 중..."),
+        components: [stopRow],
+      });
+    } catch (error) {
+      await codexAppServer.releaseThread(threadId);
+      updateSessionStatus(channelId, "offline");
+      throw error;
+    }
 
     const startedAt = Date.now();
     const heartbeat = setInterval(async () => {
@@ -716,7 +630,7 @@ export class SessionManager {
     } catch (error) {
       await channel.send(`❌ ${error instanceof Error ? error.message : "Failed to start Codex turn"}`);
       updateSessionStatus(channelId, "offline");
-      this.finishSession(channelId);
+      await this.finishSession(channelId);
     }
   }
 
@@ -896,7 +810,13 @@ export class SessionManager {
         return;
       }
       case "turn/completed":
-      case "task_complete": {
+      case "task_complete":
+      case "turn_aborted": {
+        if (turnId) {
+          active.completedTurnIds ??= new Set();
+          if (active.completedTurnIds.has(turnId)) return;
+          active.completedTurnIds.add(turnId);
+        }
         const turn = params.turn as { status?: string | { type?: string }; error?: { message?: string; additionalDetails?: string | null } | null } | undefined;
         const statusType =
           method === "task_complete"
@@ -908,6 +828,12 @@ export class SessionManager {
               ? turn.status.type
               : undefined;
 
+        if (method === "turn_aborted" || statusType === "interrupted") {
+          if (stream) await stream.messages.at(-1)?.edit({ content: L("⏹️ Stopped", "⏹️ 중지됨"), components: [] }).catch(() => {});
+          updateSessionStatus(channelId, "idle");
+          await this.finishSession(channelId);
+          return;
+        }
         if (statusType === "failed") {
           const message =
             turn?.error?.additionalDetails
@@ -917,10 +843,21 @@ export class SessionManager {
             await stream.messages.at(-1)?.edit({ content: `❌ ${message}`, components: [] }).catch(() => {});
           }
           updateSessionStatus(channelId, "offline");
-          this.finishSession(channelId);
+          await this.finishSession(channelId);
           return;
         }
 
+        let continuingTurnId: string | null = null;
+        let hasQueuedTurns = false;
+        try {
+          hasQueuedTurns = (await codexAppServer.listQueuedTurns(active.threadId)).length > 0;
+          const thread = await codexAppServer.readThread(active.threadId, true);
+          continuingTurnId = thread.turns?.find((turn) =>
+            turn.id !== active.turnId &&
+            (typeof turn.status === "string" ? turn.status : turn.status.type) === "inProgress")?.id ?? null;
+        } catch {
+          // Completion reporting remains available if queue inspection fails.
+        }
         if (stream) {
           const durationMs = Date.now() - stream.startedAt;
           const canRecoverStoredPlan = normalizeCollaborationMode(stream.collaborationMode) === "plan" && Boolean(active.turnId);
@@ -961,8 +898,27 @@ export class SessionManager {
           await this.flushStream(channelId, true);
         }
 
+        if (stream && (hasQueuedTurns || continuingTurnId)) {
+          // The server dispatches queued turns itself. Keep the writer and
+          // stream handler until the last queued turn completes.
+          active.turnId = continuingTurnId;
+          stream.buffer = "";
+          stream.startedAt = Date.now();
+          stream.hasTextOutput = false;
+          stream.finalAnswerStarted = false;
+          stream.completedPlan = false;
+          stream.agentMessagePhases.clear();
+          stream.lastError = null;
+          stream.toolUseCount = 0;
+          stream.lastEditTime = 0;
+          stream.messages = [await active.channel.send({
+            content: L("⏳ Thinking...", "⏳ 생각 중..."), components: [stream.stopRow],
+          })];
+          updateSessionStatus(channelId, "online");
+          return;
+        }
         updateSessionStatus(channelId, "idle");
-        this.finishSession(channelId);
+        await this.finishSession(channelId);
       }
     }
   }
@@ -1172,17 +1128,25 @@ export class SessionManager {
     }
 
     updateSessionStatus(channelId, "offline");
-    this.finishSession(channelId);
+    await this.finishSession(channelId);
     return true;
   }
 
-  private finishSession(channelId: string): void {
+  private async finishSession(channelId: string): Promise<void> {
+    const session = this.sessions.get(channelId);
     const stream = this.streamState.get(channelId);
     if (stream) {
       clearInterval(stream.heartbeat);
       this.streamState.delete(channelId);
     }
 
+    if (session) {
+      try {
+        await codexAppServer.releaseThread(session.threadId);
+      } catch (error) {
+        console.error(`[codex] Failed to release thread ${session.threadId}:`, error);
+      }
+    }
     this.sessions.delete(channelId);
     pendingCustomInputs.delete(channelId);
 
@@ -1313,51 +1277,54 @@ export class SessionManager {
     return this.pendingQueuePrompts.has(channelId);
   }
 
+  private async withQueueThread<T>(channelId: string, fallback: T, action: (threadId: string) => Promise<T>): Promise<T> {
+    const active = this.sessions.get(channelId);
+    const threadId = active?.threadId ?? getSession(channelId)?.session_id;
+    if (!threadId) return fallback;
+    if (!active) await codexAppServer.resumeThread(threadId);
+    try {
+      return await action(threadId);
+    } finally {
+      if (!this.findActiveByThread(threadId)) await codexAppServer.releaseThread(threadId);
+    }
+  }
+
   async getQueueSize(channelId: string): Promise<number> {
-    const threadId = await this.getThreadIdForQueue(channelId);
-    if (!threadId) return 0;
-    return (await codexAppServer.listQueuedTurns(threadId)).length;
+    return this.withQueueThread(channelId, 0, async (threadId) =>
+      (await codexAppServer.listQueuedTurns(threadId)).length);
   }
 
   async getQueue(channelId: string): Promise<{ id: string; prompt: string }[]> {
-    const threadId = await this.getThreadIdForQueue(channelId);
-    if (!threadId) return [];
-    const queue = await codexAppServer.listQueuedTurns(threadId);
-    return queue.map((entry) => ({
-      id: entry.id,
-      prompt: entry.input.filter((item) => item.type === "text").map((item) => item.text ?? "").join("\n"),
-    }));
+    return this.withQueueThread(channelId, [], async (threadId) => {
+      const queue = await codexAppServer.listQueuedTurns(threadId);
+      return queue.map((entry) => ({
+        id: entry.id,
+        prompt: entry.input.filter((item) => item.type === "text").map((item) => item.text ?? "").join("\n"),
+      }));
+    });
   }
 
   async clearQueue(channelId: string): Promise<number> {
-    const threadId = await this.getThreadIdForQueue(channelId);
     this.pendingQueuePrompts.delete(channelId);
-    if (!threadId) return 0;
-    const queue = await codexAppServer.listQueuedTurns(threadId);
-    let count = 0;
-    for (const entry of queue) {
-      if (await codexAppServer.deleteQueuedTurn(threadId, entry.id)) count += 1;
-    }
-    return count;
+    return this.withQueueThread(channelId, 0, async (threadId) => {
+      const queue = await codexAppServer.listQueuedTurns(threadId);
+      let count = 0;
+      for (const entry of queue) {
+        if (await codexAppServer.deleteQueuedTurn(threadId, entry.id)) count += 1;
+      }
+      return count;
+    });
   }
 
   async removeFromQueue(channelId: string, queuedSubmissionId: string): Promise<string | null> {
-    const threadId = await this.getThreadIdForQueue(channelId);
-    if (!threadId) return null;
-    const queue = await codexAppServer.listQueuedTurns(threadId);
-    const entry = queue.find((item) => item.id === queuedSubmissionId);
-    if (!entry || !(await codexAppServer.deleteQueuedTurn(threadId, entry.id))) return null;
-    return entry.input.filter((item) => item.type === "text").map((item) => item.text ?? "").join("\n");
+    return this.withQueueThread(channelId, null as string | null, async (threadId) => {
+      const queue = await codexAppServer.listQueuedTurns(threadId);
+      const entry = queue.find((item) => item.id === queuedSubmissionId);
+      if (!entry || !(await codexAppServer.deleteQueuedTurn(threadId, entry.id))) return null;
+      return entry.input.filter((item) => item.type === "text").map((item) => item.text ?? "").join("\n");
+    });
   }
 
-  private async getThreadIdForQueue(channelId: string): Promise<string | null> {
-    const active = this.sessions.get(channelId);
-    if (active) return active.threadId;
-    const threadId = getSession(channelId)?.session_id;
-    if (!threadId) return null;
-    await codexAppServer.resumeThread(threadId);
-    return threadId;
-  }
 }
 
 export const sessionManager = new SessionManager();
